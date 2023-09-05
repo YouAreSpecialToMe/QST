@@ -2,7 +2,8 @@ import pickle
 
 task = "cola"
 
-with open(f"glue_lst_mrpc_roberta-large.pickle", "rb") as f:
+model_name = "opt-6.7b"
+with open(f"glue_lst_mrpc_{model_name}.pickle", "rb") as f:
     loaded_dict = pickle.load(f)
 # print(loaded_dict)
 
@@ -17,17 +18,18 @@ for elem in loaded_dict["log"]:
 max_lora = max(values)
 print(max_lora)
 
-with open(f"glue_lora_cola_opt-6.7b.pickle", "rb") as f:
-    loaded_dict = pickle.load(f)
-# print(loaded_dict)
-
-values = []
-for elem in loaded_dict["log"]:
-    # print(elem)
-    # if 'loss' in elem.keys():
-    #     values.append(elem['loss'])eval_accuracy
-    if "eval_matthews_correlation" in elem.keys():
-        values.append(elem['eval_matthews_correlation'])
-
-max_moelora = max(values)
-print(max_moelora)
+# model_name = "/home/zzx/pythonproject/LLM/huggingface-demos/experiments/faster_generation/opt-1.3b"
+# with open(f"glue_lora_stsb_{model_name}.pickle", "rb") as f:
+#     loaded_dict = pickle.load(f)
+# # print(loaded_dict)
+#
+# values = []
+# for elem in loaded_dict["log"]:
+#     # print(elem)
+#     # if 'loss' in elem.keys():
+#     #     values.append(elem['loss'])eval_accuracy
+#     if "eval_accuracy" in elem.keys():
+#         values.append(elem['eval_accuracy'])
+#
+# max_moelora = max(values)
+# print(max_moelora)
