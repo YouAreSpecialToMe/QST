@@ -195,14 +195,14 @@ if __name__ == "__main__":
         # "model_checkpoint": "/home/zzx/pythonproject/LLM/huggingface-demos/experiments/faster_generation/opt-1.3b",
         "model_checkpoint": "opt-6.7b",
         "target_module": ["query", "value"],
-        "mnli": {"batch_size": 8, "epoch": 5, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 5E-04},
-        "sst2": {"batch_size": 16, "epoch": 5, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 5E-04},
-        "mrpc": {"batch_size": 8, "epoch": 5, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 4E-04},
-        "cola": {"batch_size": 64, "epoch": 5, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 4E-04},
-        "qnli": {"batch_size": 4, "epoch": 5, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 4E-04},
-        "qqp": {"batch_size": 16, "epoch": 5, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 5E-04},
-        "rte": {"batch_size": 32, "epoch": 5, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 5E-04},
-        "stsb": {"batch_size": 16, "epoch": 5, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 4E-04},
+        "mnli": {"batch_size": 8, "epoch": 5, "r": 16, "alpha": 16, "max_seqlen": 512, "learning_rate": 5E-04},
+        "sst2": {"batch_size": 16, "epoch": 5, "r": 16, "alpha": 16, "max_seqlen": 512, "learning_rate": 5E-04},
+        "mrpc": {"batch_size": 8, "epoch": 5, "r": 16, "alpha": 16, "max_seqlen": 512, "learning_rate": 4E-04},
+        "cola": {"batch_size": 64, "epoch": 5, "r": 16, "alpha": 16, "max_seqlen": 512, "learning_rate": 4E-04},
+        "qnli": {"batch_size": 4, "epoch": 5, "r": 16, "alpha": 16, "max_seqlen": 512, "learning_rate": 4E-04},
+        "qqp": {"batch_size": 16, "epoch": 5, "r": 16, "alpha": 16, "max_seqlen": 512, "learning_rate": 5E-04},
+        "rte": {"batch_size": 32, "epoch": 5, "r": 16, "alpha": 16, "max_seqlen": 512, "learning_rate": 5E-04},
+        "stsb": {"batch_size": 16, "epoch": 5, "r": 16, "alpha": 16, "max_seqlen": 512, "learning_rate": 4E-04},
     }
 
     # parameters_robert_l = {
