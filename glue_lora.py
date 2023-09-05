@@ -191,18 +191,18 @@ def train(task, parameters):
 
 
 if __name__ == "__main__":
-    parameters_robert_b = {
-        "model_checkpoint": "/home/zzx/pythonproject/LLM/huggingface-demos/experiments/faster_generation/opt-1.3b",
-        # "model_checkpoint": "opt-6.7b",
+    parameters = {
+        # "model_checkpoint": "/home/zzx/pythonproject/LLM/huggingface-demos/experiments/faster_generation/opt-1.3b",
+        "model_checkpoint": "opt-6.7b",
         "target_module": ["query", "value"],
-        "mnli": {"batch_size": 8, "epoch": 30, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 5E-04},
-        "sst2": {"batch_size": 16, "epoch": 60, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 5E-04},
-        "mrpc": {"batch_size": 8, "epoch": 30, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 4E-04},
-        "cola": {"batch_size": 64, "epoch": 80, "r": 8, "alpha": 8, "max_seqlen": 128, "learning_rate": 4E-04},
-        "qnli": {"batch_size": 4, "epoch": 25, "r": 8, "alpha": 8, "max_seqlen": 128, "learning_rate": 4E-04},
-        "qqp": {"batch_size": 16, "epoch": 25, "r": 8, "alpha": 8, "max_seqlen": 128, "learning_rate": 5E-04},
-        "rte": {"batch_size": 32, "epoch": 80, "r": 8, "alpha": 8, "max_seqlen": 128, "learning_rate": 5E-04},
-        "stsb": {"batch_size": 16, "epoch": 40, "r": 8, "alpha": 8, "max_seqlen": 128, "learning_rate": 4E-04},
+        "mnli": {"batch_size": 8, "epoch": 5, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 5E-04},
+        "sst2": {"batch_size": 16, "epoch": 5, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 5E-04},
+        "mrpc": {"batch_size": 8, "epoch": 5, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 4E-04},
+        "cola": {"batch_size": 64, "epoch": 5, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 4E-04},
+        "qnli": {"batch_size": 4, "epoch": 5, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 4E-04},
+        "qqp": {"batch_size": 16, "epoch": 5, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 5E-04},
+        "rte": {"batch_size": 32, "epoch": 5, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 5E-04},
+        "stsb": {"batch_size": 16, "epoch": 5, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 4E-04},
     }
 
     # parameters_robert_l = {
@@ -221,13 +221,13 @@ if __name__ == "__main__":
     for task in GLUE_TASKS:
         # if task == "cola" or task =="mnli" or task =="mrpc":
         #     continue
-        task = "stsb"
+        # task = "stsb"
         result_dict = {}
-        result, log = train(task, parameters_robert_b)
+        result, log = train(task, parameters)
         result_dict["result"] = result
         result_dict["log"] = log
 
-        model_name = parameters_robert_b["model_checkpoint"]
+        model_name = parameters["model_checkpoint"]
         with open(f"glue_lora_{task}_{model_name}.pickle", 'wb') as f:
             pickle.dump(result_dict, f)
 
