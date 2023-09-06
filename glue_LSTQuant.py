@@ -1,5 +1,8 @@
 import os
 import pickle
+import time
+
+import GPUtil
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
@@ -8,11 +11,29 @@ import numpy as np
 import torch
 from collections import defaultdict
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, TrainingArguments, BitsAndBytesConfig, \
-    Trainer, AutoConfig, OPTForSequenceClassification, DataCollatorWithPadding
+    Trainer, AutoConfig, OPTForSequenceClassification, DataCollatorWithPadding, TrainerCallback
 from LSTQuant import LSTQuant, LSTQuantConfig, print_trainable_parameters, AdapterLinear
 from modeling_opt_lst import LSTOPTForCausalLM, LSTOPTForSequenceClassification
 
 torch.backends.cuda.matmul.allow_tf32 = True
+
+
+class MemoryLoggingCallback(TrainerCallback):
+    def __init__(self, initial_memory_allocated):
+        super().__init__()
+        self.initial_memory_allocated = initial_memory_allocated
+        self.memory_allocated = []
+        # self.memory_cached = []
+
+    def on_step_end(self, args, state, control, **kwargs):
+        # allocated = torch.cuda.memory_allocated()
+        initial_memory = GPUtil.getGPUs()[0].memoryUsed
+        # print(initial_memory)
+        # cached = torch.cuda.memory_cached()
+        self.memory_allocated.append(initial_memory)
+        # self.memory_cached.append(cached)
+        # print(
+        #     f"Step {state.global_step}, Memory Allocated: {initial_memory}MB")
 
 
 def print_trainable_parameters(model):
@@ -33,7 +54,7 @@ def print_trainable_parameters(model):
             param.requires_grad = True
         all_param += param.numel()
         if param.requires_grad:
-            print(name)
+            # print(name)
             trainable_params += param.numel()
     print(
         f"trainable params: {trainable_params} || all params: {all_param} || trainable%: {100 * trainable_params / all_param}"
@@ -59,6 +80,7 @@ GLUE_TASKS = ["cola", "mnli", "mrpc", "qnli", "qqp", "rte", "sst2", "stsb"]
 
 
 def train(task, parameters):
+    device = parameters["device"]
     batch_size = parameters[task]["batch_size"]
     model_checkpoint = parameters["model_checkpoint"]
     epoch = parameters[task]["epoch"]
@@ -112,9 +134,13 @@ def train(task, parameters):
     config = AutoConfig.from_pretrained(model_checkpoint)
     # print(config.layerdrop)
     # exit(0)
+    # with init_empty_weights():
+    #     LLM = OPTForSequenceClassification(config)
     LLM = OPTForSequenceClassification.from_pretrained(model_checkpoint, load_in_4bit=True,
                                                        quantization_config=quant_config, torch_dtype=torch.float32,
                                                        num_labels=num_labels)
+
+    # print(LLM.hf_device_map)
     # help(LLM.forward)
     # exit(0)
     if len(encoded_dataset["train"]) > 20000:
@@ -151,6 +177,11 @@ def train(task, parameters):
     )
 
     model = LSTOPTForSequenceClassification(LLM, config, LSTconfig)
+    # print(model.hf_device_map)
+    # device_map = infer_auto_device_map(model)
+    # print(device_map)
+    # exit(0)
+    # print(model.device)
 
     for name, module in model.named_modules():
         # 设置一些层的数据类型
@@ -169,7 +200,7 @@ def train(task, parameters):
         #             # 如果使用bf16格式，且模型权重的数据类型为torch.float32，
         #             # 则将该层设置为bfloat16数据格式
         #             module = module.to(torch.float16)
-    print(model)
+    # print(model)
     # exit(0)
     print_trainable_parameters(model)
     # exit(0)
@@ -211,6 +242,10 @@ def train(task, parameters):
 
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
 
+    initial_memory_allocated = torch.cuda.memory_allocated()
+
+    start_time = time.time()
+    memory_callback = MemoryLoggingCallback(initial_memory_allocated=initial_memory_allocated)
     trainer = Trainer(
         model,
         args,
@@ -218,15 +253,17 @@ def train(task, parameters):
         eval_dataset=encoded_dataset[validation_key],
         tokenizer=tokenizer,
         compute_metrics=compute_metrics,
-        data_collator=data_collator
-        # callbacks=[EarlyStoppingCallback(early_stopping_patience=3)]
+        data_collator=data_collator,
+        callbacks=[memory_callback]
     )
+    end_time = time.time()
+
 
     trainer.train()
     results = trainer.evaluate()
     # print(results)
 
-    return results, trainer.state.log_history
+    return results, trainer.state.log_history,(end_time - start_time), max(memory_callback.memory_allocated)
 
 
 if __name__ == "__main__":
@@ -235,14 +272,15 @@ if __name__ == "__main__":
         # "model_checkpoint": "opt-6.7b",
         "target_module": ["query", "value"],
         "num_experts": 4,
-        "mnli": {"batch_size": 16, "epoch": 5, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 5E-04},
-        "sst2": {"batch_size": 64, "epoch": 5, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 5E-04},
-        "mrpc": {"batch_size": 32, "epoch": 5, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 4E-04},
-        "cola": {"batch_size": 64, "epoch": 5, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 5E-04},
-        "qnli": {"batch_size": 4, "epoch": 5, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 4E-04},
-        "qqp": {"batch_size": 16, "epoch": 5, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 5E-04},
-        "rte": {"batch_size": 8, "epoch": 5, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 5E-04},
-        "stsb": {"batch_size": 16, "epoch": 5, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 4E-04},
+        "device": "cuda:0",
+        "mnli": {"batch_size": 16, "epoch": 7, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 5E-04},
+        "sst2": {"batch_size": 64, "epoch": 7, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 5E-04},
+        "mrpc": {"batch_size": 32, "epoch": 7, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 4E-04},
+        "cola": {"batch_size": 64, "epoch": 7, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 5E-04},
+        "qnli": {"batch_size": 4, "epoch": 7, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 4E-04},
+        "qqp": {"batch_size": 16, "epoch": 7, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 5E-04},
+        "rte": {"batch_size": 8, "epoch": 7, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 5E-04},
+        "stsb": {"batch_size": 16, "epoch": 7, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 4E-04},
     }
 
     # parameters_robert_l = {
@@ -259,16 +297,40 @@ if __name__ == "__main__":
     #     "rte": {"batch_size": 8, "epoch": 20, "r": 8, "alpha": 16, "max_seqlen": 128, "learning_rate": 4E-04},
     #     "stsb": {"batch_size": 8, "epoch": 30, "r": 8, "alpha": 16, "max_seqlen": 128, "learning_rate": 2E-04},
     # }
-
+    result_dict = {}
     for task in GLUE_TASKS:
         # task = "stsb"
-        result_dict = {}
-        result, log = train(task, parameters)
-        result_dict["result"] = result
-        result_dict["log"] = log
 
-        model_name = parameters["model_checkpoint"]
-        with open(f"glue_lst_{task}_{model_name}.pickle", 'wb') as f:
-            pickle.dump(result_dict, f)
+        result_dict[task] = {}
+        result, log, train_time, memory_usage = train(task, parameters)
+        # result_dict[task]["result"] = result
+        # result_dict["log"] = log
+
+        values = []
+        for elem in log:
+            print(f"elem: {elem}")
+            if "eval_loss" not in elem.keys():
+                continue
+            if task == "cola":
+                values.append(elem['eval_matthews_correlation'])
+            elif task == "stsb":
+                values.append(elem['eval_pearson'])
+            else:
+                values.append(elem['eval_accuracy'])
+
+        best_acc = max(values)
+        result_dict[task]["acc"] = best_acc
+        result_dict[task]["time"] = train_time
+        result_dict[task]["memory_usage"] = memory_usage
+
+
+
+        print(f"Task:{task}: Best acc {best_acc}, Total training time {train_time}, Memory usage {memory_usage}")
+
+    model_name = os.path.basename(parameters["model_checkpoint"])
+    with open(f"glue_lst_{task}_{model_name}.pickle", 'wb') as f:
+        pickle.dump(result_dict, f)
+
+
 
         # exit(0)
