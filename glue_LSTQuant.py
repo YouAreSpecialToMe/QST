@@ -19,9 +19,9 @@ torch.backends.cuda.matmul.allow_tf32 = True
 
 
 class MemoryLoggingCallback(TrainerCallback):
-    def __init__(self, initial_memory_allocated):
+    def __init__(self):
         super().__init__()
-        self.initial_memory_allocated = initial_memory_allocated
+        # self.initial_memory_allocated = initial_memory_allocated
         self.memory_allocated = []
         # self.memory_cached = []
 
@@ -242,10 +242,10 @@ def train(task, parameters):
 
     data_collator = DataCollatorWithPadding(tokenizer=tokenizer)
 
-    initial_memory_allocated = torch.cuda.memory_allocated()
+    # initial_memory_allocated = torch.cuda.memory_allocated()
 
     start_time = time.time()
-    memory_callback = MemoryLoggingCallback(initial_memory_allocated=initial_memory_allocated)
+    memory_callback = MemoryLoggingCallback()
     trainer = Trainer(
         model,
         args,
@@ -256,10 +256,9 @@ def train(task, parameters):
         data_collator=data_collator,
         callbacks=[memory_callback]
     )
-    end_time = time.time()
-
 
     trainer.train()
+    end_time = time.time()
     results = trainer.evaluate()
     # print(results)
 
