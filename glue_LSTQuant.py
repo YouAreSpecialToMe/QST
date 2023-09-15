@@ -1,21 +1,32 @@
+import argparse
 import os
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 import pickle
 import time
 
 import GPUtil
+from accelerate import infer_auto_device_map, dispatch_model
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+
 
 from datasets import load_dataset, load_metric
 import numpy as np
 import torch
 from collections import defaultdict
 from transformers import AutoTokenizer, AutoModelForSequenceClassification, TrainingArguments, BitsAndBytesConfig, \
-    Trainer, AutoConfig, OPTForSequenceClassification, DataCollatorWithPadding, TrainerCallback
+    Trainer, AutoConfig, DataCollatorWithPadding, TrainerCallback
 from LSTQuant import LSTQuant, LSTQuantConfig, print_trainable_parameters, AdapterLinear
-from modeling_opt_lst import LSTOPTForCausalLM, LSTOPTForSequenceClassification
+from modeling_opt_lst import LSTOPTForCausalLM, LSTOPTForSequenceClassification,OPTForSequenceClassification
+
+import warnings
+
+# Filter out the specific warning
+warnings.filterwarnings("ignore", message="Was asked to gather along dimension 0, but all input tensors were scalars; will instead unsqueeze and return a vector.")
 
 torch.backends.cuda.matmul.allow_tf32 = True
+
+# os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
 class MemoryLoggingCallback(TrainerCallback):
@@ -139,6 +150,10 @@ def train(task, parameters):
     LLM = OPTForSequenceClassification.from_pretrained(model_checkpoint, load_in_4bit=True,
                                                        quantization_config=quant_config, torch_dtype=torch.float32,
                                                        num_labels=num_labels)
+    device_map = infer_auto_device_map(LLM, no_split_module_classes=["OPTDecoderLayer"])
+    LLM = dispatch_model(LLM, device_map)
+    # print(device_map)
+
 
     # print(LLM.hf_device_map)
     # help(LLM.forward)
@@ -154,34 +169,19 @@ def train(task, parameters):
     LSTconfig = LSTQuantConfig(
         add_layer_norm_before_adapter=False,
         add_layer_norm_after_adapter=True,
-        word_embed_proj_dim=config.word_embed_proj_dim,
-        max_position_embeddings=config.max_position_embeddings,
-        # _remove_final_layer_norm =config._remove_final_layer_norm,
-        # do_layer_norm_before = config.do_layer_norm_before,
-        model_checkpoint="opt-1.3b",
-        emb_peft_type="adaptor",
-        linear_peft_type="adaptor",
         r=16,
         alpha_r=16,
-        num_expert=1,
-        routing_strategy="gating",
-        weight_average=False,
         dropout=0.1,
         activation="swish",
-        cuda="cuda:0",
         fan_in_fan_out=False,
-        num_labels=num_labels,
-        hidden_size=config.hidden_size,
-        num_hidden_layers=config.num_hidden_layers,
         peft_hidden_size=16
     )
 
     model = LSTOPTForSequenceClassification(LLM, config, LSTconfig)
-    # print(model.hf_device_map)
-    # device_map = infer_auto_device_map(model)
+    # device_map = infer_auto_device_map(model, no_split_module_classes=["OPTDecoderLayer"])
     # print(device_map)
     # exit(0)
-    # print(model.device)
+    # model = dispatch_model(model, device_map)
 
     for name, module in model.named_modules():
         # 设置一些层的数据类型
@@ -262,24 +262,27 @@ def train(task, parameters):
     results = trainer.evaluate()
     # print(results)
 
-    return results, trainer.state.log_history,(end_time - start_time), max(memory_callback.memory_allocated)
+    return results, trainer.state.log_history, (end_time - start_time), max(memory_callback.memory_allocated)
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Paramters of QST.")
+    parser.add_argument("--batch_size", type=str, required=True, help="batch size")
+    args = parser.parse_args()
     parameters = {
-        "model_checkpoint": "/home/zzx/pythonproject/LLM/huggingface-demos/experiments/faster_generation/opt-1.3b",
-        # "model_checkpoint": "opt-6.7b",
+        # "model_checkpoint": "/home/zzx/pythonproject/LLM/huggingface-demos/experiments/faster_generation/opt-1.3b",
+        "model_checkpoint": "opt-6.7b",
         "target_module": ["query", "value"],
         "num_experts": 4,
         "device": "cuda:0",
-        "mnli": {"batch_size": 16, "epoch": 7, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 5E-04},
-        "sst2": {"batch_size": 64, "epoch": 7, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 5E-04},
-        "mrpc": {"batch_size": 32, "epoch": 7, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 4E-04},
-        "cola": {"batch_size": 64, "epoch": 7, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 5E-04},
-        "qnli": {"batch_size": 4, "epoch": 7, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 4E-04},
-        "qqp": {"batch_size": 16, "epoch": 7, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 5E-04},
-        "rte": {"batch_size": 8, "epoch": 7, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 5E-04},
-        "stsb": {"batch_size": 16, "epoch": 7, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 4E-04},
+        "mnli": {"batch_size": args.batch_size, "epoch": 7, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 5E-04},
+        "sst2": {"batch_size": args.batch_size, "epoch": 7, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 5E-04},
+        "mrpc": {"batch_size": args.batch_size, "epoch": 7, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 4E-04},
+        "cola": {"batch_size": args.batch_size, "epoch": 7, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 5E-04},
+        "qnli": {"batch_size": args.batch_size, "epoch": 7, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 4E-04},
+        "qqp": {"batch_size": args.batch_size, "epoch": 7, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 5E-04},
+        "rte": {"batch_size": args.batch_size, "epoch": 7, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 5E-04},
+        "stsb": {"batch_size": args.batch_size, "epoch": 7, "r": 8, "alpha": 8, "max_seqlen": 512, "learning_rate": 4E-04},
     }
 
     # parameters_robert_l = {
@@ -299,6 +302,8 @@ if __name__ == "__main__":
     result_dict = {}
     for task in GLUE_TASKS:
         # task = "stsb"
+        if task == "qnli":
+            continue
 
         result_dict[task] = {}
         result, log, train_time, memory_usage = train(task, parameters)
@@ -307,7 +312,7 @@ if __name__ == "__main__":
 
         values = []
         for elem in log:
-            print(f"elem: {elem}")
+            # print(f"elem: {elem}")
             if "eval_loss" not in elem.keys():
                 continue
             if task == "cola":
@@ -322,14 +327,10 @@ if __name__ == "__main__":
         result_dict[task]["time"] = train_time
         result_dict[task]["memory_usage"] = memory_usage
 
-
-
         print(f"Task:{task}: Best acc {best_acc}, Total training time {train_time}, Memory usage {memory_usage}")
 
     model_name = os.path.basename(parameters["model_checkpoint"])
     with open(f"glue_lst_{task}_{model_name}.pickle", 'wb') as f:
         pickle.dump(result_dict, f)
-
-
 
         # exit(0)
