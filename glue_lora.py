@@ -1,3 +1,4 @@
+import argparse
 import os
 import pickle
 import time
@@ -219,18 +220,22 @@ def train(task, parameters):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Paramters of QLoRA.")
+    parser.add_argument("--batch_size", type=int, required=True, help="batch size")
+    parser.add_argument("--model_checkpoint", type=str, required=True, help="model checkpoint")
+    args = parser.parse_args()
     parameters = {
-        "model_checkpoint": "/home/zzx/pythonproject/LLM/huggingface-demos/experiments/faster_generation/opt-1.3b",
+        "model_checkpoint": args.model_checkpoint,
         # "model_checkpoint": "opt-2.7b",
         "target_module": ["query", "value"],
-        "mnli": {"batch_size": 4, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 5E-04},
-        "sst2": {"batch_size": 4, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 5E-04},
-        "mrpc": {"batch_size": 4, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 4E-04},
-        "cola": {"batch_size": 16, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 4E-04},
-        "qnli": {"batch_size": 4, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 4E-04},
-        "qqp": {"batch_size": 4, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 5E-04},
-        "rte": {"batch_size": 4, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 5E-04},
-        "stsb": {"batch_size": 4, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 4E-04},
+        "mnli": {"batch_size": args.batch_size, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 5E-04},
+        "sst2": {"batch_size": args.batch_size, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 5E-04},
+        "mrpc": {"batch_size": args.batch_size, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 4E-04},
+        "cola": {"batch_size": args.batch_size, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 4E-04},
+        "qnli": {"batch_size": args.batch_size, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 4E-04},
+        "qqp": {"batch_size": args.batch_size, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 5E-04},
+        "rte": {"batch_size": args.batch_size, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 5E-04},
+        "stsb": {"batch_size": args.batch_size, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 4E-04},
     }
 
     # parameters_robert_l = {
@@ -277,7 +282,7 @@ if __name__ == "__main__":
         print(f"Task:{task}: Best acc {best_acc}, Total training time {train_time}, Memory usage {memory_usage}")
 
     model_name = os.path.basename(parameters["model_checkpoint"])
-    with open(f"glue_qlora_{task}_{model_name}.pickle", 'wb') as f:
+    with open(f"glue_qlora_{task}_{model_name}_{args.batch_size}.pickle", 'wb') as f:
         pickle.dump(result_dict, f)
 
 # task = "cola"
