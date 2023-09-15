@@ -4,8 +4,9 @@ import time
 
 import GPUtil
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "1" \
-                                     ""
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+
 
 from datasets import load_dataset, load_metric
 import numpy as np
@@ -68,7 +69,7 @@ def print_trainable_parameters(model):
         all_param += param.numel()
         if param.requires_grad:
             trainable_params += param.numel()
-            print(name)
+            # print(name)
     print(
         f"trainable params: {trainable_params} || all params: {all_param} || trainable%: {100 * trainable_params / all_param}"
     )
@@ -143,16 +144,16 @@ def train(task, parameters):
     # exit(0)
 
     # bf16 = True
-    # for name, module in model.named_modules():
+    for name, module in model.named_modules():
         # 设置一些层的数据类型
         # if isinstance(module, LoraLayer):
         #     # 如果模型是LoraLayer
         #     if bf16:
         #         # 且使用args.bf16格式，但是只有某些GPU支持
         #         module = module.to(torch.bfloat16)
-        # if 'norm' in name:
-        #     # 如果是归一化层，transformers中有很多layernorm层
-        #     module = module.to(torch.float32)
+        if 'norm' in name:
+            # 如果是归一化层，transformers中有很多layernorm层
+            module = module.to(torch.float32)
         # if 'lm_head' in name or 'embed_tokens' in name:
         #     # 如果lm_head或embed_tokens等，也就是输出层和输入层
         #     if hasattr(module, 'weight'):
@@ -205,31 +206,31 @@ def train(task, parameters):
         eval_dataset=encoded_dataset[validation_key],
         tokenizer=tokenizer,
         compute_metrics=compute_metrics,
-        callbacks=[]
+        callbacks=[memory_callback]
     )
 
     trainer.train()
     end_time = time.time()
 
     results = trainer.evaluate()
-    print(results)
+    # print(results)
 
     return results, trainer.state.log_history, (end_time - start_time), max(memory_callback.memory_allocated)
 
 
 if __name__ == "__main__":
     parameters = {
-        # "model_checkpoint": "/home/zzx/pythonproject/LLM/huggingface-demos/experiments/faster_generation/opt-1.3b",
-        "model_checkpoint": "opt-6.7b",
+        "model_checkpoint": "/home/zzx/pythonproject/LLM/huggingface-demos/experiments/faster_generation/opt-1.3b",
+        # "model_checkpoint": "opt-2.7b",
         "target_module": ["query", "value"],
-        "mnli": {"batch_size": 8, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 512, "learning_rate": 5E-04},
-        "sst2": {"batch_size": 16, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 512, "learning_rate": 5E-04},
-        "mrpc": {"batch_size": 8, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 512, "learning_rate": 4E-04},
-        "cola": {"batch_size": 64, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 512, "learning_rate": 4E-04},
-        "qnli": {"batch_size": 4, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 512, "learning_rate": 4E-04},
-        "qqp": {"batch_size": 16, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 512, "learning_rate": 5E-04},
-        "rte": {"batch_size": 32, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 512, "learning_rate": 5E-04},
-        "stsb": {"batch_size": 16, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 512, "learning_rate": 4E-04},
+        "mnli": {"batch_size": 4, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 5E-04},
+        "sst2": {"batch_size": 4, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 5E-04},
+        "mrpc": {"batch_size": 4, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 4E-04},
+        "cola": {"batch_size": 16, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 4E-04},
+        "qnli": {"batch_size": 4, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 4E-04},
+        "qqp": {"batch_size": 4, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 5E-04},
+        "rte": {"batch_size": 4, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 5E-04},
+        "stsb": {"batch_size": 4, "epoch": 7, "r": 16, "alpha": 16, "max_seqlen": 128, "learning_rate": 4E-04},
     }
 
     # parameters_robert_l = {
@@ -248,6 +249,8 @@ if __name__ == "__main__":
     result_dict = {}
     for task in GLUE_TASKS:
         # task = "stsb"
+        if task == "qnli":
+            continue
 
         result_dict[task] = {}
         result, log, train_time, memory_usage = train(task, parameters)
