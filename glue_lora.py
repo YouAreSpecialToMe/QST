@@ -3,8 +3,6 @@ import os
 import pickle
 import time
 
-import GPUtil
-
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
@@ -18,22 +16,22 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification, Trai
 from peft import get_peft_model, LoraConfig
 from peft.tuners.lora import LoraLayer
 
-class MemoryLoggingCallback(TrainerCallback):
-    def __init__(self):
-        super().__init__()
-        # self.initial_memory_allocated = initial_memory_allocated
-        self.memory_allocated = []
-        # self.memory_cached = []
+# class MemoryLoggingCallback(TrainerCallback):
+#     def __init__(self):
+#         super().__init__()
+#         # self.initial_memory_allocated = initial_memory_allocated
+#         self.memory_allocated = []
+#         # self.memory_cached = []
 
-    def on_step_end(self, args, state, control, **kwargs):
-        # allocated = torch.cuda.memory_allocated()
-        initial_memory = GPUtil.getGPUs()[0].memoryUsed
-        # print(initial_memory)
-        # cached = torch.cuda.memory_cached()
-        self.memory_allocated.append(initial_memory)
-        # self.memory_cached.append(cached)
-        # print(
-        #     f"Step {state.global_step}, Memory Allocated: {initial_memory}MB")
+#     def on_step_end(self, args, state, control, **kwargs):
+#         # allocated = torch.cuda.memory_allocated()
+#         initial_memory = GPUtil.getGPUs()[0].memoryUsed
+#         # print(initial_memory)
+#         # cached = torch.cuda.memory_cached()
+#         self.memory_allocated.append(initial_memory)
+#         # self.memory_cached.append(cached)
+#         # print(
+#         #     f"Step {state.global_step}, Memory Allocated: {initial_memory}MB")
 
 def find_all_linear_names(bits, model):
     '''
@@ -207,7 +205,7 @@ def train(task, parameters):
         eval_dataset=encoded_dataset[validation_key],
         tokenizer=tokenizer,
         compute_metrics=compute_metrics,
-        callbacks=[memory_callback]
+        # callbacks=[memory_callback]
     )
 
     trainer.train()
@@ -216,7 +214,7 @@ def train(task, parameters):
     results = trainer.evaluate()
     # print(results)
 
-    return results, trainer.state.log_history, (end_time - start_time), max(memory_callback.memory_allocated)
+    return results, trainer.state.log_history, (end_time - start_time)
 
 
 if __name__ == "__main__":
@@ -258,7 +256,7 @@ if __name__ == "__main__":
             continue
 
         result_dict[task] = {}
-        result, log, train_time, memory_usage = train(task, parameters)
+        result, log, train_time = train(task, parameters)
         # result_dict[task]["result"] = result
         # result_dict["log"] = log
 
@@ -277,9 +275,9 @@ if __name__ == "__main__":
         best_acc = max(values)
         result_dict[task]["acc"] = best_acc
         result_dict[task]["time"] = train_time
-        result_dict[task]["memory_usage"] = memory_usage
+        # result_dict[task]["memory_usage"] = memory_usage
 
-        print(f"Task:{task}: Best acc {best_acc}, Total training time {train_time}, Memory usage {memory_usage}")
+        print(f"Task:{task}: Best acc {best_acc}, Total training time {train_time}")
 
     model_name = os.path.basename(parameters["model_checkpoint"])
     with open(f"glue_qlora_{task}_{model_name}_{args.batch_size}.pickle", 'wb') as f:
