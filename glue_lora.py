@@ -3,7 +3,6 @@ import os
 import pickle
 import time
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 
