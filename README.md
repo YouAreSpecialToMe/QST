@@ -30,14 +30,4 @@ Experiments show that QST can reduce the total memory footprint by up to 2.3 tim
    ```
    cd QST
    pip install -r requirements.txt
-
-### Prerequisites
-
-What things you need to install the software and how to install them.
-
-### Setup
-
-A step by step series of examples that tell you how to get a development environment running.
-
-```bash
-# Give the example
+## Usage
