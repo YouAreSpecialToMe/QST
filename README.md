@@ -17,7 +17,7 @@ Finetuning large language models (LLMs) has been empirically effective on a vari
 Experiments show that QST can reduce the total memory footprint by up to 2.3 times and speed up the finetuning process by up to 3 times while achieving competent performance compared with the state-of-the-art. When it comes to full finetuning, QST can reduce the total memory footprint up to 7 times.
 
 <img src="memory_comsuption_70b.jpg" width="400" height="300" />
-
+<img src="mmlu_70b.jpg" width="400" height="300" />
 ## Features
 
 - **Feature 1**: 4-bit Quantization.
