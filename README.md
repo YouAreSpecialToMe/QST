@@ -71,4 +71,6 @@ Experiments show that QST can reduce the total memory footprint by up to 2.3 tim
         ... # Other training args
     )
 ### Scripts
- You can use qst-70b.sh to finetune Llama-2-70b model. This code is based on [[QLoRA](https://github.com/artidoro/qlora) repo.
+ You can use qst-70b.sh to finetune Llama-2-70b model. This code is based on [QLoRA](https://github.com/artidoro/qlora) repo.
+ '''
+ bash qst-70b.sh
