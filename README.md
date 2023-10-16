@@ -18,8 +18,8 @@ Experiments show that QST can reduce the total memory footprint by up to 2.3 tim
 
 ## Features
 
-- **Feature 1**: A short description of the feature.
-- **Feature 2**: A short description of the feature.
+- **Feature 1**: 4-bit Quantization.
+- **Feature 2**: Side tuning.
 - ... add more as needed ...
 
 ## Installation
