@@ -64,9 +64,11 @@ Experiments show that QST can reduce the total memory footprint by up to 2.3 tim
    model = QSTLlamaForCausalLM(model, config, qst_config)
    ### OPT series
    model = QSTOPTForCausalLM(model, config, qst_config)
-4. You can use the HuggingFace trainer or customer defined training process based on Pytorch to finetune QST
+4. You can use the HuggingFace trainer or customer-defined training process based on Pytorch to finetune QST
     ```
         trainer = Trainer(
         model,
         ... # Other training args
     )
+### Scripts
+ You can use qst-70b.sh to finetune Llama-2-70b model. This code is based on [[QLoRA](https://github.com/artidoro/qlora) repo.
