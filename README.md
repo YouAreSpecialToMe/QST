@@ -49,7 +49,7 @@ Experiments show that QST can reduce the total memory footprint by up to 2.3 tim
     )
 2. Initialize the hyperparameters of the side network
    ```
-       lstq_config = LSTQuantConfig(
+       qst_config = QSTConfig(
         add_layer_norm_before_adapter=False,
         add_layer_norm_after_adapter=True,
         r=16,
@@ -58,3 +58,10 @@ Experiments show that QST can reduce the total memory footprint by up to 2.3 tim
         fan_in_fan_out=False,
         peft_hidden_size=16
     )
+3. Initialize the QST model based on the 4-bit pre-trained model
+   ```
+   # Llama series
+   model = QSTLlamaForCausalLM(model, config, qst_config)
+   ### OPT series
+   model = QSTOPTForCausalLM(model, config, qst_config)
+   
