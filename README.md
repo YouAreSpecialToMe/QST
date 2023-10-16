@@ -23,7 +23,7 @@ Experiments show that QST can reduce the total memory footprint by up to 2.3 tim
 
 ## Installation
 
-1. git clone the repo:
+1. git clone the repo
    ```
    git clone https://github.com/YouAreSpecialToMe/QST.git
 2. install requirements
@@ -46,4 +46,16 @@ Experiments show that QST can reduce the total memory footprint by up to 2.3 tim
             bnb_4bit_quant_type="nf4",
         ),
         torch_dtype=torch.bfloat16,
+    )
+2. Initialize the hyperparameters of the side network
+   ```
+       lstq_config = LSTQuantConfig(
+        add_layer_norm_before_adapter=False,
+        add_layer_norm_after_adapter=True,
+        r=16,
+        alpha_r=16,
+        dropout=0.1,
+        activation="swish",
+        fan_in_fan_out=False,
+        peft_hidden_size=16
     )
