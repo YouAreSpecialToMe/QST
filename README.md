@@ -33,7 +33,7 @@ Experiments show that QST can reduce the total memory footprint by up to 2.3 tim
 ## Usage
 1. Leverage the HuggingFace and bitsandbytes library to load the 4-bit pre-trained model
    ```
-       model = AutoModelForCausalLM.from_pretrained(
+   model = AutoModelForCausalLM.from_pretrained(
         YourModelPath,
         load_in_4bit=True,
         device_map="auto",
@@ -49,7 +49,7 @@ Experiments show that QST can reduce the total memory footprint by up to 2.3 tim
     )
 2. Initialize the hyperparameters of the side network
    ```
-       qst_config = QSTConfig(
+   qst_config = QSTConfig(
         add_layer_norm_before_adapter=False,
         add_layer_norm_after_adapter=True,
         r=16,
@@ -60,16 +60,16 @@ Experiments show that QST can reduce the total memory footprint by up to 2.3 tim
     )
 3. Initialize the QST model based on the 4-bit pre-trained model
    ```
-      # Llama series
-      model = QSTLlamaForCausalLM(model, config, qst_config)
-      # OPT series
-      model = QSTOPTForCausalLM(model, config, qst_config)
+   # Llama series
+   model = QSTLlamaForCausalLM(model, config, qst_config)
+   # OPT series
+   model = QSTOPTForCausalLM(model, config, qst_config)
 4. You can use the HuggingFace trainer or customer-defined training process based on Pytorch to finetune QST
     ```
-        trainer = Trainer(
+    trainer = Trainer(
         model,
         ... # Other training args
-        )
+    )
 ## Scripts
  You can use qst-70b.sh to finetune Llama-2-70b model. 
 ```
