@@ -19,11 +19,10 @@ Experiments show that QST can reduce the total memory footprint by up to 2.3 tim
   <img src="memory_comsuption_70b.jpg" width="400" height="300" />
    <img src="mmlu_70b.jpg" width="400" height="300" />
 </p>
-
-## Features
-
 <img src="qst.jpg" width=500" height="300" />
-
+<img src="qst.jpg" width=500" height="300" />
+## Features
+<img src="qst.jpg" width=500" height="300" />
 - **Feature 1**: 4-bit Quantization.
 - **Feature 2**: Side tuning.
 
