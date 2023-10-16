@@ -23,7 +23,13 @@ Experiments show that QST can reduce the total memory footprint by up to 2.3 tim
 
 ## Installation
 
-Step-by-step guide on how to install your project. Include any system requirements and external dependencies.
+1. git clone the repo:
+   ```
+   git clone https://github.com/YouAreSpecialToMe/QST.git
+2. install requirements
+   ```
+   cd QST
+   pip install -r requirements.txt
 
 ### Prerequisites
 
