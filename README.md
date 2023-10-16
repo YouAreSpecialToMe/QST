@@ -34,7 +34,7 @@ Experiments show that QST can reduce the total memory footprint by up to 2.3 tim
 1. Leverage the HuggingFace and bitsandbytes library to load the 4-bit pre-trained model
    ```
        model = AutoModelForCausalLM.from_pretrained(
-        Your_Model_Path,
+        YourModelPath,
         load_in_4bit=True,
         device_map="auto",
         quantization_config=BitsAndBytesConfig(
@@ -64,4 +64,9 @@ Experiments show that QST can reduce the total memory footprint by up to 2.3 tim
    model = QSTLlamaForCausalLM(model, config, qst_config)
    ### OPT series
    model = QSTOPTForCausalLM(model, config, qst_config)
-   
+4. You can use the HuggingFace trainer or customer defined training process based on Pytorch to finetune QST
+    ```
+        trainer = Trainer(
+        model,
+        ... # Other training args
+    )
