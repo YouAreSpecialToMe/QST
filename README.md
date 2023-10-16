@@ -53,7 +53,6 @@ Experiments show that QST can reduce the total memory footprint by up to 2.3 tim
         add_layer_norm_before_adapter=False,
         add_layer_norm_after_adapter=True,
         r=16,
-        alpha_r=16,
         dropout=0.1,
         activation="swish",
         fan_in_fan_out=False,
