@@ -19,6 +19,7 @@ Experiments show that QST can reduce the total memory footprint by up to 2.3 tim
   <img src="memory_comsuption_70b.jpg" width="400" height="300" />
    <img src="mmlu_70b.jpg" width="400" height="300" />
 </p>
+<img src="qst.jpg" width=1000" height="800" />
 
 ## Features
 
