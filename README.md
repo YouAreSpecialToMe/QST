@@ -79,7 +79,7 @@ Experiments show that QST can reduce the total memory footprint by up to 2.3 tim
 Anonymous.
 
 ## License
-
+This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
 ## Acknowlegement
 This code is based on [QLoRA](https://github.com/artidoro/qlora) repo, Standford [Alpaca](https://github.com/artidoro/qlora), and [FastChat](https://github.com/lm-sys/FastChat) repos.
 
