@@ -31,3 +31,19 @@ Experiments show that QST can reduce the total memory footprint by up to 2.3 tim
    cd QST
    pip install -r requirements.txt
 ## Usage
+1. Leverage the HuggingFace and bitsandbytes library to load the 4-bit pre-trained model
+   ```
+       model = AutoModelForCausalLM.from_pretrained(
+        Your_Model_Path,
+        load_in_4bit=True,
+        device_map="auto",
+        quantization_config=BitsAndBytesConfig(
+            load_in_4bit=True,
+            llm_int8_threshold=6.0,
+            llm_int8_has_fp16_weight=False,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+        ),
+        torch_dtype=torch.bfloat16,
+    )
