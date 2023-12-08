@@ -80,6 +80,12 @@ Experiments show that QST can reduce the total memory footprint by up to 2.3 tim
 ```
    bash qst-70b.sh
  ```
+## Download the checkpoint of QST-70B
+  You can download the checkpoint from 
+```
+   https://huggingface.co/YouAreSpecialToMe/QST-70B-checkpoint/tree/main
+ ```
+
 ## Contributing
 Anonymous.
 
