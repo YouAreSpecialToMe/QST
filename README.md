@@ -92,7 +92,7 @@ Experiments show that QST can reduce the total memory footprint by up to 2.3 tim
    model.load_qst_state("YourPath/QST-70B-checkpoint/")
  ```
   and then run the following script
-    ```
+  ```
    python chatbot_sample.py
  ```
 
