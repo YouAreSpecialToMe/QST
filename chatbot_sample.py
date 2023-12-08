@@ -68,7 +68,7 @@ setattr(model, 'model_parallel', True)
 setattr(model, 'is_parallelizable', True)
 model.config.torch_dtype = torch.float32
 
-model.load_qst_state("QST-70b-checkpoint/")
+model.load_qst_state("YourPath/QST-70B-checkpoint/")
 # model.config.use_cache = False
 
 for name, module in model.named_modules():
