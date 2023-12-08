@@ -86,6 +86,16 @@ Experiments show that QST can reduce the total memory footprint by up to 2.3 tim
    https://huggingface.co/YouAreSpecialToMe/QST-70B-checkpoint/tree/main
  ```
 
+## Test QST-70B generation
+  You first need to download the checkpoint of QST-70B and modify the path in the "chatbot_sample.py"
+  ```
+   model.load_qst_state("YourPath/QST-70B-checkpoint/")
+ ```
+  and then run the following script
+    ```
+   python chatbot_sample.py
+ ```
+
 ## Contributing
 Anonymous.
 
