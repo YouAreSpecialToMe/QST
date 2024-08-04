@@ -1,5 +1,5 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig, AutoConfig
-from modeling_llama_lst import QSTLlamaForCausalLM, LlamaForCausalLM
+from modeling_llama_qst import QSTLlamaForCausalLM, LlamaForCausalLM
 import torch
 from QSTConfig import QSTConfig
 from peft.tuners.lora import LoraLayer
@@ -49,7 +49,7 @@ tokenizer.add_special_tokens({
 
 config = AutoConfig.from_pretrained("meta-llama/Llama-2-70b-chat-hf")
 config.rope_theta = 10000.0
-lstq_config = QSTConfig(
+qst_config = QSTConfig(
     add_layer_norm_before_adapter=False,
     add_layer_norm_after_adapter=True,
     r=16,
@@ -60,7 +60,7 @@ lstq_config = QSTConfig(
     peft_hidden_size=16
 )
 
-model = QSTLlamaForCausalLM(model, config, lstq_config)
+model = QSTLlamaForCausalLM(model, config, qst_config)
 # print(model.hf_device_map)
 
 model.config.pad_token_id = 0
