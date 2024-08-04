@@ -285,13 +285,13 @@ def find_all_linear_names(args, model):
 
 class SavePeftModelCallback(transformers.TrainerCallback):
     def save_model(self, args, state, kwargs):
-        print('Saving LSTQuant checkpoint...')
+        print('Saving QST checkpoint...')
         if state.best_model_checkpoint is not None:
-            checkpoint_folder = os.path.join(state.best_model_checkpoint, "LSTQuant_model")
+            checkpoint_folder = os.path.join(state.best_model_checkpoint, "QST_model")
         else:
             checkpoint_folder = os.path.join(args.output_dir, f"{PREFIX_CHECKPOINT_DIR}-{state.global_step}")
 
-        kwargs["model"].save_lst_state(checkpoint_folder)
+        kwargs["model"].save_qst_state(checkpoint_folder)
 
     def on_save(self, args, state, control, **kwargs):
         self.save_model(args, state, kwargs)
@@ -439,7 +439,7 @@ def get_accelerate_model(args, checkpoint_dir):
         config.rope_theta = 10000.0
         # print(config.vocab_size)
         # exit(0)
-        lstq_config = LSTQuantConfig(
+        qst_config = QSTConfig(
             add_layer_norm_before_adapter=False,
             add_layer_norm_after_adapter=True,
             r=16,
@@ -451,12 +451,11 @@ def get_accelerate_model(args, checkpoint_dir):
         )
 
         if 'Llama' in args.model_name_or_path:
-            model = LSTLlamaForCausalLM(model, config, lstq_config)
-            # device_map = infer_auto_device_map(model, no_split_module_classes=["LSTLlamaDecoderLayer"])
+            model = QSTLlamaForCausalLM(model, config, qst_config)
+            # device_map = infer_auto_device_map(model, no_split_module_classes=["QSTLlamaDecoderLayer"])
             # model = dispatch_model(model, device_map)
-            # print("Finished!")
         elif 'opt' in args.model_name_or_path:
-            model = LSTOPTForCausalLM(model, config, lstq_config)
+            model = QSTOPTForCausalLM(model, config, qst_config)
         #     # device_map = infer_auto_device_map(model, no_split_module_classes=["OPTDecoderLayer"])
         #     # model = dispatch_model(model, device_map)
 
@@ -477,10 +476,10 @@ def get_accelerate_model(args, checkpoint_dir):
         model.config.torch_dtype = (torch.float32 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32))
 
         if checkpoint_dir is not None:
-            print("Loading LSTQuant from checkpoint.")
-            model.load_lst_state(checkpoint_dir)
+            print("Loading QST from checkpoint.")
+            model.load_qst_state(checkpoint_dir)
         else:
-            print(f'initing LSTQuant modules...')
+            print(f'initing QST modules...')
             # modules = find_all_linear_names(args, model)
             # config = LoraConfig(
             #     r=args.lora_r,
@@ -520,8 +519,8 @@ def print_trainable_parameters(args, model):
         # if "lm_head" in name:
         #     param.requires_grad = True
         if param.requires_grad:
-            # if "lst" not in name and "down" not in name and "z" not in name:
-            print(name)
+            # if "qst" not in name and "down" not in name and "z" not in name:
+            # print(name)
             trainable_params += param.numel()
     if args.bits == 4: trainable_params /= 2
     print(
