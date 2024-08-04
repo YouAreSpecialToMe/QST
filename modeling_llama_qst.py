@@ -37,8 +37,8 @@ from transformers.utils import add_start_docstrings, add_start_docstrings_to_mod
     replace_return_docstrings
 from transformers.models.llama.configuration_llama import LlamaConfig
 
-from LSTQuant import AdapterLinear
-from modeling_lst_output import LSTBaseModelOutputWithPast
+from QSTConfig import AdapterLinear
+from modeling_qst_output import QSTBaseModelOutputWithPast
 
 logger = logging.get_logger(__name__)
 
@@ -187,7 +187,6 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids):
     # The first two dimensions of cos and sin are always 1, so we can `squeeze` them.
     cos = cos.squeeze(1).squeeze(0)  # [seq_len, dim]
     sin = sin.squeeze(1).squeeze(0)  # [seq_len, dim]
-    position_ids = position_ids.to(cos.device)
     cos = cos[position_ids].unsqueeze(1)  # [bs, 1, seq_len, dim]
     sin = sin[position_ids].unsqueeze(1)  # [bs, 1, seq_len, dim]
     q_embed = (q * cos) + (rotate_half(q) * sin)
@@ -204,78 +203,6 @@ class LlamaMLP(nn.Module):
         self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
         self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
-        self.act_fn = ACT2FN[config.hidden_act]
-
-    def forward(self, x):
-        if self.config.pretraining_tp > 1:
-            slice = self.intermediate_size // self.config.pretraining_tp
-            gate_proj_slices = self.gate_proj.weight.split(slice, dim=0)
-            up_proj_slices = self.up_proj.weight.split(slice, dim=0)
-            down_proj_slices = self.down_proj.weight.split(slice, dim=1)
-
-            gate_proj = torch.cat(
-                [F.linear(x, gate_proj_slices[i]) for i in range(self.config.pretraining_tp)], dim=-1
-            )
-            up_proj = torch.cat([F.linear(x, up_proj_slices[i]) for i in range(self.config.pretraining_tp)], dim=-1)
-
-            intermediate_states = (self.act_fn(gate_proj) * up_proj).split(slice, dim=2)
-            down_proj = [
-                F.linear(intermediate_states[i], down_proj_slices[i]) for i in range(self.config.pretraining_tp)
-            ]
-            down_proj = sum(down_proj)
-        else:
-            down_proj = self.down_proj(self.act_fn(self.gate_proj(x)) * self.up_proj(x))
-
-        return down_proj
-
-    def set_device(self, blackbone_mlp):
-        self.gate_proj = self.gate_proj.to(blackbone_mlp.gate_proj.weight.device)
-        self.up_proj = self.up_proj.to(blackbone_mlp.up_proj.weight.device)
-        self.down_proj = self.down_proj.to(blackbone_mlp.down_proj.weight.device)
-
-
-class LowRLlamaMLP(nn.Module):
-    def __init__(self, config, lstconfig):
-        super().__init__()
-        self.config = config
-        self.hidden_size = config.hidden_size
-        self.intermediate_size = config.intermediate_size
-        # self.gate_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.gate_proj = AdapterLinear(in_features=self.hidden_size,
-                                       out_features=self.intermediate_size,
-                                       r=int(lstconfig.peft_hidden_size),
-                                       alpha_r=int(lstconfig.peft_hidden_size),
-                                       activation=lstconfig.activation,
-                                       # num_expert=LSTQuantConfig.num_expert,
-                                       # routing_strategy=LSTQuantConfig.routing_strategy,
-                                       # weight_average=LSTQuantConfig.weight_average,
-                                       add_layer_norm_after_adapter=lstconfig.add_layer_norm_after_adapter,
-                                       add_layer_norm_before_adapter=lstconfig.add_layer_norm_before_adapter,
-                                       dropout=lstconfig.dropout, bias=False)
-        # self.up_proj = nn.Linear(self.hidden_size, self.intermediate_size, bias=False)
-        self.up_proj = AdapterLinear(in_features=self.hidden_size,
-                                     out_features=self.intermediate_size,
-                                     r=int(lstconfig.peft_hidden_size),
-                                     alpha_r=int(lstconfig.peft_hidden_size),
-                                     activation=lstconfig.activation,
-                                     # num_expert=LSTQuantConfig.num_expert,
-                                     # routing_strategy=LSTQuantConfig.routing_strategy,
-                                     # weight_average=LSTQuantConfig.weight_average,
-                                     add_layer_norm_after_adapter=lstconfig.add_layer_norm_after_adapter,
-                                     add_layer_norm_before_adapter=lstconfig.add_layer_norm_before_adapter,
-                                     dropout=lstconfig.dropout, bias=False)
-        # self.down_proj = nn.Linear(self.intermediate_size, self.hidden_size, bias=False)
-        self.down_proj = AdapterLinear(in_features=self.intermediate_size,
-                                       out_features=self.hidden_size,
-                                       r=int(lstconfig.peft_hidden_size),
-                                       alpha_r=int(lstconfig.peft_hidden_size),
-                                       activation=lstconfig.activation,
-                                       # num_expert=LSTQuantConfig.num_expert,
-                                       # routing_strategy=LSTQuantConfig.routing_strategy,
-                                       # weight_average=LSTQuantConfig.weight_average,
-                                       add_layer_norm_after_adapter=lstconfig.add_layer_norm_after_adapter,
-                                       add_layer_norm_before_adapter=lstconfig.add_layer_norm_before_adapter,
-                                       dropout=lstconfig.dropout, bias=False)
         self.act_fn = ACT2FN[config.hidden_act]
 
     def forward(self, x):
@@ -435,206 +362,6 @@ class LlamaAttention(nn.Module):
                 raise ValueError(
                     f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
                 )
-            attn_weights = attn_weights + attention_mask.to(attn_weights.device)
-
-        # upcast attention to fp32
-        attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
-        attn_output = torch.matmul(attn_weights, value_states)
-
-        if attn_output.size() != (bsz, self.num_heads, q_len, self.head_dim):
-            raise ValueError(
-                f"`attn_output` should be of size {(bsz, self.num_heads, q_len, self.head_dim)}, but is"
-                f" {attn_output.size()}"
-            )
-
-        attn_output = attn_output.transpose(1, 2).contiguous()
-        attn_output = attn_output.reshape(bsz, q_len, self.hidden_size)
-
-        if self.config.pretraining_tp > 1:
-            attn_output = attn_output.split(self.hidden_size // self.config.pretraining_tp, dim=2)
-            o_proj_slices = self.o_proj.weight.split(self.hidden_size // self.config.pretraining_tp, dim=1)
-            attn_output = sum([F.linear(attn_output[i], o_proj_slices[i]) for i in range(self.config.pretraining_tp)])
-        else:
-            attn_output = self.o_proj(attn_output)
-
-        if not output_attentions:
-            attn_weights = None
-
-        return attn_output, attn_weights, past_key_value
-
-    def set_device(self, blackbone_att):
-        self.q_proj = self.q_proj.to(blackbone_att.q_proj.weight.device)
-        self.k_proj = self.k_proj.to(blackbone_att.k_proj.weight.device)
-        self.v_proj = self.v_proj.to(blackbone_att.v_proj.weight.device)
-        self.o_proj = self.o_proj.to(blackbone_att.o_proj.weight.device)
-
-
-class LowRLlamaAttention(nn.Module):
-    """Multi-headed attention from 'Attention Is All You Need' paper"""
-
-    def __init__(self, config: LlamaConfig, lstconfig):
-        super().__init__()
-        self.config = config
-        self.hidden_size = config.hidden_size
-        self.num_heads = config.num_attention_heads
-        self.head_dim = self.hidden_size // self.num_heads
-        self.num_key_value_heads = config.num_key_value_heads
-        self.num_key_value_groups = self.num_heads // self.num_key_value_heads
-        self.max_position_embeddings = config.max_position_embeddings
-        self.rope_theta = config.rope_theta
-
-        if (self.head_dim * self.num_heads) != self.hidden_size:
-            raise ValueError(
-                f"hidden_size must be divisible by num_heads (got `hidden_size`: {self.hidden_size}"
-                f" and `num_heads`: {self.num_heads})."
-            )
-        # self.q_proj = nn.Linear(self.hidden_size, self.num_heads * self.head_dim, bias=False)
-        self.q_proj = AdapterLinear(in_features=self.hidden_size,
-                                    out_features=self.num_heads * self.head_dim,
-                                    r=int(lstconfig.peft_hidden_size),
-                                    alpha_r=int(lstconfig.peft_hidden_size),
-                                    activation=lstconfig.activation,
-                                    # num_expert=LSTQuantConfig.num_expert,
-                                    # routing_strategy=LSTQuantConfig.routing_strategy,
-                                    # weight_average=LSTQuantConfig.weight_average,
-                                    add_layer_norm_after_adapter=lstconfig.add_layer_norm_after_adapter,
-                                    add_layer_norm_before_adapter=lstconfig.add_layer_norm_before_adapter,
-                                    dropout=lstconfig.dropout, bias=False)
-        # self.k_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
-        self.k_proj = AdapterLinear(in_features=self.hidden_size,
-                                    out_features=self.num_key_value_heads * self.head_dim,
-                                    r=int(lstconfig.peft_hidden_size),
-                                    alpha_r=int(lstconfig.peft_hidden_size),
-                                    activation=lstconfig.activation,
-                                    # num_expert=LSTQuantConfig.num_expert,
-                                    # routing_strategy=LSTQuantConfig.routing_strategy,
-                                    # weight_average=LSTQuantConfig.weight_average,
-                                    add_layer_norm_after_adapter=lstconfig.add_layer_norm_after_adapter,
-                                    add_layer_norm_before_adapter=lstconfig.add_layer_norm_before_adapter,
-                                    dropout=lstconfig.dropout, bias=False)
-        # self.v_proj = nn.Linear(self.hidden_size, self.num_key_value_heads * self.head_dim, bias=False)
-        self.v_proj = AdapterLinear(in_features=self.hidden_size,
-                                    out_features=self.num_key_value_heads * self.head_dim,
-                                    r=int(lstconfig.peft_hidden_size),
-                                    alpha_r=int(lstconfig.peft_hidden_size),
-                                    activation=lstconfig.activation,
-                                    # num_expert=LSTQuantConfig.num_expert,
-                                    # routing_strategy=LSTQuantConfig.routing_strategy,
-                                    # weight_average=LSTQuantConfig.weight_average,
-                                    add_layer_norm_after_adapter=lstconfig.add_layer_norm_after_adapter,
-                                    add_layer_norm_before_adapter=lstconfig.add_layer_norm_before_adapter,
-                                    dropout=lstconfig.dropout, bias=False)
-        # self.o_proj = nn.Linear(self.num_heads * self.head_dim, self.hidden_size, bias=False)
-        self.o_proj = AdapterLinear(in_features=self.num_heads * self.head_dim,
-                                    out_features=self.hidden_size,
-                                    r=int(lstconfig.peft_hidden_size),
-                                    alpha_r=int(lstconfig.peft_hidden_size),
-                                    activation=lstconfig.activation,
-                                    # num_expert=LSTQuantConfig.num_expert,
-                                    # routing_strategy=LSTQuantConfig.routing_strategy,
-                                    # weight_average=LSTQuantConfig.weight_average,
-                                    add_layer_norm_after_adapter=lstconfig.add_layer_norm_after_adapter,
-                                    add_layer_norm_before_adapter=lstconfig.add_layer_norm_before_adapter,
-                                    dropout=lstconfig.dropout, bias=False)
-        self._init_rope()
-
-    def _init_rope(self):
-        if self.config.rope_scaling is None:
-            self.rotary_emb = LlamaRotaryEmbedding(
-                self.head_dim,
-                max_position_embeddings=self.max_position_embeddings,
-                base=self.rope_theta,
-            )
-        else:
-            scaling_type = self.config.rope_scaling["type"]
-            scaling_factor = self.config.rope_scaling["factor"]
-            if scaling_type == "linear":
-                self.rotary_emb = LlamaLinearScalingRotaryEmbedding(
-                    self.head_dim,
-                    max_position_embeddings=self.max_position_embeddings,
-                    scaling_factor=scaling_factor,
-                    base=self.rope_theta,
-                )
-            elif scaling_type == "dynamic":
-                self.rotary_emb = LlamaDynamicNTKScalingRotaryEmbedding(
-                    self.head_dim,
-                    max_position_embeddings=self.max_position_embeddings,
-                    scaling_factor=scaling_factor,
-                    base=self.rope_theta,
-                )
-            else:
-                raise ValueError(f"Unknown RoPE scaling type {scaling_type}")
-
-    def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int):
-        return tensor.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
-
-    def forward(
-            self,
-            hidden_states: torch.Tensor,
-            attention_mask: Optional[torch.Tensor] = None,
-            position_ids: Optional[torch.LongTensor] = None,
-            past_key_value: Optional[Tuple[torch.Tensor]] = None,
-            output_attentions: bool = False,
-            use_cache: bool = False,
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
-        bsz, q_len, _ = hidden_states.size()
-
-        if self.config.pretraining_tp > 1:
-            key_value_slicing = (self.num_key_value_heads * self.head_dim) // self.config.pretraining_tp
-            query_slices = self.q_proj.weight.split(
-                (self.num_heads * self.head_dim) // self.config.pretraining_tp, dim=0
-            )
-            key_slices = self.k_proj.weight.split(key_value_slicing, dim=0)
-            value_slices = self.v_proj.weight.split(key_value_slicing, dim=0)
-
-            query_states = [F.linear(hidden_states, query_slices[i]) for i in range(self.config.pretraining_tp)]
-            query_states = torch.cat(query_states, dim=-1)
-
-            key_states = [F.linear(hidden_states, key_slices[i]) for i in range(self.config.pretraining_tp)]
-            key_states = torch.cat(key_states, dim=-1)
-
-            value_states = [F.linear(hidden_states, value_slices[i]) for i in range(self.config.pretraining_tp)]
-            value_states = torch.cat(value_states, dim=-1)
-
-        else:
-            query_states = self.q_proj(hidden_states)
-            key_states = self.k_proj(hidden_states)
-            value_states = self.v_proj(hidden_states)
-
-        query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-        key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-        value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-
-        kv_seq_len = key_states.shape[-2]
-        if past_key_value is not None:
-            kv_seq_len += past_key_value[0].shape[-2]
-        cos, sin = self.rotary_emb(value_states, seq_len=kv_seq_len)
-        query_states, key_states = apply_rotary_pos_emb(query_states, key_states, cos, sin, position_ids)
-
-        if past_key_value is not None:
-            # reuse k, v, self_attention
-            key_states = torch.cat([past_key_value[0], key_states], dim=2)
-            value_states = torch.cat([past_key_value[1], value_states], dim=2)
-
-        past_key_value = (key_states, value_states) if use_cache else None
-
-        # repeat k/v heads if n_kv_heads < n_heads
-        key_states = repeat_kv(key_states, self.num_key_value_groups)
-        value_states = repeat_kv(value_states, self.num_key_value_groups)
-
-        attn_weights = torch.matmul(query_states, key_states.transpose(2, 3)) / math.sqrt(self.head_dim)
-
-        if attn_weights.size() != (bsz, self.num_heads, q_len, kv_seq_len):
-            raise ValueError(
-                f"Attention weights should be of size {(bsz, self.num_heads, q_len, kv_seq_len)}, but is"
-                f" {attn_weights.size()}"
-            )
-
-        if attention_mask is not None:
-            if attention_mask.size() != (bsz, 1, q_len, kv_seq_len):
-                raise ValueError(
-                    f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
-                )
             attn_weights = attn_weights + attention_mask
 
         # upcast attention to fp32
@@ -669,159 +396,6 @@ class LlamaDecoderLayer(nn.Module):
         self.hidden_size = config.hidden_size
         self.self_attn = LlamaAttention(config=config)
         self.mlp = LlamaMLP(config)
-        self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-
-    def forward(
-            self,
-            hidden_states: torch.Tensor,
-            attention_mask: Optional[torch.Tensor] = None,
-            position_ids: Optional[torch.LongTensor] = None,
-            past_key_value: Optional[Tuple[torch.Tensor]] = None,
-            output_attentions: Optional[bool] = False,
-            use_cache: Optional[bool] = False,
-    ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
-        """
-        Args:
-            hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
-            attention_mask (`torch.FloatTensor`, *optional*): attention mask of size
-                `(batch, 1, tgt_len, src_len)` where padding elements are indicated by very large negative values.
-            output_attentions (`bool`, *optional*):
-                Whether or not to return the attentions tensors of all attention layers. See `attentions` under
-                returned tensors for more detail.
-            use_cache (`bool`, *optional*):
-                If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
-                (see `past_key_values`).
-            past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
-        """
-
-        residual = hidden_states
-
-        hidden_states = self.input_layernorm(hidden_states)
-
-        # Self Attention
-        hidden_states, self_attn_weights, present_key_value = self.self_attn(
-            hidden_states=hidden_states,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_value=past_key_value,
-            output_attentions=output_attentions,
-            use_cache=use_cache,
-        )
-        hidden_states = residual + hidden_states
-
-        # Fully Connected
-        residual = hidden_states
-        hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states)
-        hidden_states = residual + hidden_states
-
-        outputs = (hidden_states,)
-
-        if output_attentions:
-            outputs += (self_attn_weights,)
-
-        if use_cache:
-            outputs += (present_key_value,)
-
-        return outputs
-
-    def set_device(self, blackbone_layer):
-        self.self_attn.set_device(blackbone_layer.self_attn)
-        self.mlp.set_device(blackbone_layer.mlp)
-        self.input_layernorm = self.input_layernorm.to(blackbone_layer.input_layernorm.weight.device)
-        self.post_attention_layernorm = self.post_attention_layernorm.to(
-            blackbone_layer.post_attention_layernorm.weight.device)
-
-
-# class LSTLlamaDecoderLayer(nn.Module):
-#     def __init__(self, blackbone, config: LlamaConfig, LSTConfig):
-#         super().__init__()
-#         self.config = config
-#         self.blackbone = blackbone
-#         self.z = nn.Parameter(torch.tensor([0.5]))
-#
-#         self.downsample = AdapterLinear(in_features=int(config.hidden_size * LSTConfig.r),
-#                                         out_features=config.hidden_size,
-#                                         r=int(LSTConfig.peft_hidden_size),
-#                                         alpha_r=int(LSTConfig.peft_hidden_size),
-#                                         activation=LSTConfig.activation,
-#                                         # num_expert=LSTQuantConfig.num_expert,
-#                                         # routing_strategy=LSTQuantConfig.routing_strategy,
-#                                         # weight_average=LSTQuantConfig.weight_average,
-#                                         add_layer_norm_after_adapter=LSTConfig.add_layer_norm_after_adapter,
-#                                         add_layer_norm_before_adapter=LSTConfig.add_layer_norm_before_adapter,
-#                                         dropout=LSTConfig.dropout)
-#
-#         # self.config.hidden_size = int(config.hidden_size / LSTConfig.r)
-#         # self.config.intermediate_size = int(config.hidden_size / LSTConfig.r)
-#         # print(config.hidden_size)
-#         self.qst = LlamaDecoderLayer(self.config)
-#
-#     def forward(
-#             self,
-#             hidden_states: torch.Tensor,
-#             lst_hidden_states: torch.Tensor,
-#             attention_mask: Optional[torch.Tensor] = None,
-#             position_ids: Optional[torch.LongTensor] = None,
-#             past_key_value: Optional[Tuple[torch.Tensor]] = None,
-#             lst_past_key_value: Optional[Tuple[torch.Tensor]] = None,
-#             output_attentions: Optional[bool] = False,
-#             use_cache: Optional[bool] = False,
-#     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
-#         """
-#         Args:
-#             hidden_states (`torch.FloatTensor`): input to the layer of shape `(batch, seq_len, embed_dim)`
-#             attention_mask (`torch.FloatTensor`, *optional*): attention mask of size
-#                 `(batch, 1, tgt_len, src_len)` where padding elements are indicated by very large negative values.
-#             output_attentions (`bool`, *optional*):
-#                 Whether or not to return the attentions tensors of all attention layers. See `attentions` under
-#                 returned tensors for more detail.
-#             use_cache (`bool`, *optional*):
-#                 If set to `True`, `past_key_values` key value states are returned and can be used to speed up decoding
-#                 (see `past_key_values`).
-#             past_key_value (`Tuple(torch.FloatTensor)`, *optional*): cached past key and value projection states
-#         """
-#         with torch.no_grad():
-#             layer_outputs = self.blackbone(
-#                 hidden_states,
-#                 attention_mask=attention_mask,
-#                 position_ids=position_ids,
-#                 past_key_value=past_key_value,
-#                 output_attentions=output_attentions,
-#                 use_cache=use_cache,
-#             )
-#
-#         hidden_states = layer_outputs[0]
-#         # print(f"hidden_states2:{hidden_states.device}")
-#         # hidden_states += peft
-#         z = torch.sigmoid(self.z)
-#         lst_hidden_states = lst_hidden_states.to(hidden_states.device)
-#         # exit(0)
-#         # lst_hidden_states = lst_hidden_states.to(hidden_states.device)
-#         lst_hidden_states = (1 - z) * self.downsample(hidden_states) + z * (lst_hidden_states)
-#
-#         lst_layer_outputs = self.qst(
-#             lst_hidden_states,
-#             attention_mask=attention_mask,
-#             position_ids=position_ids,
-#             past_key_value=lst_past_key_value,
-#             output_attentions=output_attentions,
-#             use_cache=use_cache,
-#         )
-#
-#         # lst_hidden_states = lst_layer_outputs[0]
-#         outputs = (layer_outputs,lst_layer_outputs)
-#
-#         return outputs
-
-
-class LowRLlamaDecoderLayer(nn.Module):
-    def __init__(self, config: LlamaConfig, lstconfig):
-        super().__init__()
-        self.hidden_size = config.hidden_size
-        self.self_attn = LowRLlamaAttention(config=config, lstconfig=lstconfig)
-        self.mlp = LowRLlamaMLP(config, lstconfig=lstconfig)
         self.input_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.post_attention_layernorm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
@@ -1171,8 +745,7 @@ class LlamaModel(LlamaPreTrainedModel):
         )
 
 
-# LlamaModel
-class LSTLlamaModel(LlamaPreTrainedModel):
+class QSTLlamaModel(LlamaPreTrainedModel):
     """
     Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`LlamaDecoderLayer`]
 
@@ -1180,74 +753,44 @@ class LSTLlamaModel(LlamaPreTrainedModel):
         config: LlamaConfig
     """
 
-    def __init__(self, llm: LlamaModel, config: LlamaConfig, LSTConfig, hf_device_map):
-        # print("aaaaa")
-        # config
+    def __init__(self, llm: LlamaModel, config: LlamaConfig, QSTConfig):
         super().__init__(config)
-        # print("bbbbb")
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
-        self.hf_device_map = {}
-        # self.config = llm.config
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.embed_tokens.weight = llm.embed_tokens.weight
         self.embed_tokens.weight.requires_grad = False
-        self.embed_tokens = self.embed_tokens.to(("cuda:" + str(hf_device_map["model.embed_tokens"])))
-        self.hf_device_map["model.embed_tokens"] = hf_device_map["model.embed_tokens"]
-
 
         self.blackbone = llm.layers
-        # print("ccccc")
         self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.norm.weight = llm.norm.weight
         self.norm.weight.requires_grad = False
 
         self.gradient_checkpointing = False
 
-        # .to(self.blackbone[i].post_attention_layernorm.weight.device)
         self.downsample = nn.ModuleList([AdapterLinear(in_features=config.hidden_size,
-                                                       out_features=int(config.hidden_size / LSTConfig.r),
-                                                       r=int(LSTConfig.peft_hidden_size),
-                                                       alpha_r=int(LSTConfig.peft_hidden_size),
-                                                       activation=LSTConfig.activation,
-                                                       # num_expert=LSTQuantConfig.num_expert,
-                                                       # routing_strategy=LSTQuantConfig.routing_strategy,
-                                                       # weight_average=LSTQuantConfig.weight_average,
-                                                       add_layer_norm_after_adapter=LSTConfig.add_layer_norm_after_adapter,
-                                                       add_layer_norm_before_adapter=LSTConfig.add_layer_norm_before_adapter,
-                                                       dropout=LSTConfig.dropout)
+                                                       out_features=int(config.hidden_size / QSTConfig.r),
+                                                       r=int(QSTConfig.peft_hidden_size),
+                                                       alpha_r=int(QSTConfig.peft_hidden_size),
+                                                       activation=QSTConfig.activation,
+                                                       # num_expert=QSTConfig.num_expert,
+                                                       # routing_strategy=QSTConfig.routing_strategy,
+                                                       # weight_average=QSTConfig.weight_average,
+                                                       add_layer_norm_after_adapter=QSTConfig.add_layer_norm_after_adapter,
+                                                       add_layer_norm_before_adapter=QSTConfig.add_layer_norm_before_adapter,
+                                                       dropout=QSTConfig.dropout).to(self.blackbone[i].mlp.gate_proj.weight.device)
                                          for i in range(config.num_hidden_layers)])
 
-        # .to(self.blackbone[i].post_attention_layernorm.weight.device)
-
-        config.hidden_size = int(config.hidden_size / LSTConfig.r)
-        config.intermediate_size = int(config.hidden_size / LSTConfig.r)
-
         self.z = nn.ParameterList(
-            [nn.Parameter(torch.Tensor([1.0 for i in range(config.hidden_size)])) for i in
+            [nn.Parameter(torch.tensor([0.5])).to(self.blackbone[i].mlp.gate_proj.weight.device) for i in
              range(config.num_hidden_layers)])
 
-        # .to(self.blackbone[i].post_attention_layernorm.weight.device)
-        self.lst_layers = nn.ModuleList([LlamaDecoderLayer(config) for i in range(config.num_hidden_layers)])
+        config.hidden_size = int(config.hidden_size / QSTConfig.r)
+        config.intermediate_size = int(config.hidden_size / QSTConfig.r)
+        self.qst_layers = nn.ModuleList([LlamaDecoderLayer(config).to(self.blackbone[i].mlp.gate_proj.weight.device) for i in range(config.num_hidden_layers)])
+        self.norm_qst = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
 
-        # .to(self.norm.weight.device)
-        self.norm_lst = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.norm_lst = self.norm_lst.to(("cuda:" + str(hf_device_map["model.norm"])))
-        self.hf_device_map["model.norm_lst"] = hf_device_map["model.norm"]
-        self.hf_device_map["model.norm"] = hf_device_map["model.norm"]
-
-        for i in range(config.num_hidden_layers):
-            # print(i)
-            gpu = "cuda:" + str(hf_device_map[f"model.layers.{i}"])
-            self.blackbone[i] = self.blackbone[i].to(gpu)
-            self.hf_device_map[f"model.blackbone.{i}"] = hf_device_map[f"model.layers.{i}"]
-            self.z[i] = self.z[i].to(gpu)
-            self.hf_device_map[f"model.z.{i}"] = hf_device_map[f"model.layers.{i}"]
-            self.lst_layers[i] = self.lst_layers[i].to(gpu)
-            self.hf_device_map[f"model.lst_layers.{i}"] = hf_device_map[f"model.layers.{i}"]
-            self.downsample[i] = self.downsample[i].to(gpu)
-            self.hf_device_map[f"model.downsample.{i}"] = hf_device_map[f"model.layers.{i}"]
         # Initialize weights and apply final processing
         # self.post_init()
 
@@ -1288,13 +831,13 @@ class LSTLlamaModel(LlamaPreTrainedModel):
             attention_mask: Optional[torch.Tensor] = None,
             position_ids: Optional[torch.LongTensor] = None,
             past_key_values: Optional[List[torch.FloatTensor]] = None,
-            lst_past_key_values: Optional[List[torch.FloatTensor]] = None,
+            qst_past_key_values: Optional[List[torch.FloatTensor]] = None,
             inputs_embeds: Optional[torch.FloatTensor] = None,
             use_cache: Optional[bool] = None,
             output_attentions: Optional[bool] = None,
             output_hidden_states: Optional[bool] = None,
             return_dict: Optional[bool] = None,
-    ) -> Union[Tuple, LSTBaseModelOutputWithPast]:
+    ) -> Union[Tuple, QSTBaseModelOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -1331,7 +874,6 @@ class LSTLlamaModel(LlamaPreTrainedModel):
 
         with torch.no_grad():
             if inputs_embeds is None:
-                # input_ids = input_ids.to(self.embed_tokens.weight.device)
                 inputs_embeds = self.embed_tokens(input_ids)
         # embed positions
         if attention_mask is None:
@@ -1358,32 +900,32 @@ class LSTLlamaModel(LlamaPreTrainedModel):
 
         if output_hidden_states:
             all_hidden_states = ()
-            lst_all_hidden_states = ()
+            qst_all_hidden_states = ()
         else:
             all_hidden_states = None
-            lst_all_hidden_states = None
+            qst_all_hidden_states = None
 
         if output_attentions:
             all_self_attns = ()
-            lst_self_attns = ()
+            qst_self_attns = ()
         else:
             all_self_attns = None
-            lst_self_attns = None
+            qst_self_attns = None
 
         if use_cache:
             next_decoder_cache = ()
-            lst_next_decoder_cache = ()
+            qst_next_decoder_cache = ()
         else:
             next_decoder_cache = None
-            lst_next_decoder_cache = None
+            qst_next_decoder_cache = None
 
-        lst_hidden_states = self.downsample[0](hidden_states)
+        qst_hidden_states = self.downsample[0](hidden_states)
         for idx, decoder_layer in enumerate(self.blackbone):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
 
             past_key_value = past_key_values[idx] if past_key_values is not None else None
-            lst_past_key_value = lst_past_key_values[idx] if lst_past_key_values is not None else None
+            qst_past_key_value = qst_past_key_values[idx] if qst_past_key_values is not None else None
 
             if self.gradient_checkpointing and self.training:
 
@@ -1402,15 +944,14 @@ class LSTLlamaModel(LlamaPreTrainedModel):
                         position_ids,
                     )
 
-                lst_layer_outputs = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(self.lst_layers[idx]),
-                    lst_hidden_states,
+                qst_layer_outputs = torch.utils.checkpoint.checkpoint(
+                    create_custom_forward(self.qst_layers[idx]),
+                    qst_hidden_states,
                     attention_mask,
                     position_ids,
                 )
             else:
                 with torch.no_grad():
-                    # hidden_states = hidden_states.to(decoder_layer.input_layernorm.weight.device)
                     layer_outputs = decoder_layer(
                         hidden_states,
                         attention_mask=attention_mask,
@@ -1421,397 +962,92 @@ class LSTLlamaModel(LlamaPreTrainedModel):
                     )
 
                 hidden_states = layer_outputs[0]
-                # hidden_states += peft
                 z = torch.sigmoid(self.z[idx])
-                # print(idx)
-                # print(f"z:{z.device}")
-                # print(f"hidden_states:{hidden_states.device}")
-                # print(f"lst_hidden_states:{lst_hidden_states.device}")
-                # print(f"self.downsample[idx](hidden_states):{self.downsample[idx](hidden_states).device}")
-                # exit(0)
-                lst_hidden_states = lst_hidden_states.to(hidden_states.device)
-                lst_hidden_states = (1 - z) * self.downsample[idx](hidden_states) + z * (lst_hidden_states)
+                qst_hidden_states = (1 - z) * self.downsample[idx](hidden_states) + z * qst_hidden_states
 
-                lst_layer_outputs = self.lst_layers[idx](
-                    lst_hidden_states,
+                qst_layer_outputs = self.qst_layers[idx](
+                    qst_hidden_states,
                     attention_mask=attention_mask,
                     position_ids=position_ids,
-                    past_key_value=lst_past_key_value,
+                    past_key_value=qst_past_key_value,
                     output_attentions=output_attentions,
                     use_cache=use_cache,
                 )
 
-            lst_hidden_states = lst_layer_outputs[0]
-            # hidden_states = layer_outputs[0]
+            qst_hidden_states = qst_layer_outputs[0]
 
             if use_cache:
                 next_decoder_cache += (layer_outputs[2 if output_attentions else 1],)
-                lst_next_decoder_cache += (lst_layer_outputs[2 if output_attentions else 1],)
+                qst_next_decoder_cache += (qst_layer_outputs[2 if output_attentions else 1],)
 
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
-                lst_self_attns += (lst_layer_outputs[1],)
+                qst_self_attns += (qst_layer_outputs[1],)
 
         with torch.no_grad():
             hidden_states = self.norm(hidden_states)
-        lst_hidden_states = self.norm_lst(lst_hidden_states)
+        qst_hidden_states = self.norm_qst(qst_hidden_states)
 
         # add hidden states from the last decoder layer
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
-            lst_all_hidden_states += (lst_hidden_states,)
+            qst_all_hidden_states += (qst_hidden_states,)
 
         if use_cache:
             next_cache = next_decoder_cache
-            lst_next_cache = lst_next_decoder_cache
+            qst_next_cache = qst_next_decoder_cache
         else:
             next_cache = None
-            lst_next_cache = None
+            qst_next_cache = None
 
         if not return_dict:
             return tuple(v for v in
-                         [lst_hidden_states, hidden_states, lst_next_cache, next_cache, lst_all_hidden_states,
-                          all_hidden_states, lst_self_attns, all_self_attns] if v is not None)
+                         [qst_hidden_states, hidden_states, qst_next_cache, next_cache, qst_all_hidden_states,
+                          all_hidden_states, qst_self_attns, all_self_attns] if v is not None)
 
-        return LSTBaseModelOutputWithPast(
-            last_lst_hidden_states=lst_hidden_states,
+        return QSTBaseModelOutputWithPast(
+            last_qst_hidden_states=qst_hidden_states,
             last_hidden_states=hidden_states,
-            lst_past_key_values=lst_next_cache,
+            qst_past_key_values=qst_next_cache,
             past_key_values=next_cache,
-            lst_hidden_states=lst_all_hidden_states,
+            qst_hidden_states=qst_all_hidden_states,
             hidden_states=all_hidden_states,
-            lst_attentions=lst_self_attns,
+            qst_attentions=qst_self_attns,
             attentions=all_self_attns,
         )
 
-    def load_lst_state(self, path):
+    def load_qst_state(self, path):
 
-        lst_layers_path = os.path.join(path, "lst_layers_parameters.pt")
-        # Load the lst_layers parameters
-        lst_layers_parameters = torch.load(lst_layers_path)
-        self.lst_layers.load_state_dict(lst_layers_parameters)
+        qst_layers_path = os.path.join(path, "qst_layers_parameters.pt")
+        # Load the qst_layers parameters
+        qst_layers_parameters = torch.load(qst_layers_path)
+        self.qst_layers.load_state_dict(qst_layers_parameters)
 
-        lst_z_path = os.path.join(path, "lst_z_parameters.pt")
-        lst_z_parameters = torch.load(lst_z_path)
-        self.z.load_state_dict(lst_z_parameters)
+        qst_z_path = os.path.join(path, "qst_z_parameters.pt")
+        qst_z_parameters = torch.load(qst_z_path)
+        self.z.load_state_dict(qst_z_parameters)
 
-        lst_downsample_path = os.path.join(path, "lst_downsample_parameters.pt")
-        lst_downsample_parameters = torch.load(lst_downsample_path)
-        self.downsample.load_state_dict(lst_downsample_parameters)
+        qst_downsample_path = os.path.join(path, "qst_downsample_parameters.pt")
+        qst_downsample_parameters = torch.load(qst_downsample_path)
+        self.downsample.load_state_dict(qst_downsample_parameters)
 
-        lst_norm_path = os.path.join(path, "lst_norm_parameters.pt")
-        lst_norm_parameters = torch.load(lst_norm_path)
-        self.norm_lst.load_state_dict(lst_norm_parameters)
+        qst_norm_path = os.path.join(path, "qst_norm_parameters.pt")
+        qst_norm_parameters = torch.load(qst_norm_path)
+        self.norm_qst.load_state_dict(qst_norm_parameters)
 
-    def save_lst_state(self, path):
+    def save_qst_state(self, path):
 
-        lst_layers_path = os.path.join(path, "lst_layers_parameters.pt")
-        torch.save(self.lst_layers.state_dict(), lst_layers_path)
+        qst_layers_path = os.path.join(path, "qst_layers_parameters.pt")
+        torch.save(self.qst_layers.state_dict(), qst_layers_path)
 
-        lst_z_path = os.path.join(path, "lst_z_parameters.pt")
-        torch.save(self.z.state_dict(), lst_z_path)
+        qst_z_path = os.path.join(path, "qst_z_parameters.pt")
+        torch.save(self.z.state_dict(), qst_z_path)
 
-        lst_downsample_path = os.path.join(path, "lst_downsample_parameters.pt")
-        torch.save(self.downsample.state_dict(), lst_downsample_path)
+        qst_downsample_path = os.path.join(path, "qst_downsample_parameters.pt")
+        torch.save(self.downsample.state_dict(), qst_downsample_path)
 
-        lst_norm_path = os.path.join(path, "lst_norm_parameters.pt")
-        torch.save(self.norm_lst.state_dict(), lst_norm_path)
-
-
-class LSTLlamaModel_v2(LlamaPreTrainedModel):
-    """
-    Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`LlamaDecoderLayer`]
-
-    Args:
-        config: LlamaConfig
-    """
-
-    def __init__(self, llm: LlamaModel, config: LlamaConfig, LSTConfig,hf_device_map):
-        super().__init__(config)
-        self.padding_idx = config.pad_token_id
-        self.vocab_size = config.vocab_size
-        self.hf_device_map = {}
-
-        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
-        self.embed_tokens.weight = llm.embed_tokens.weight
-        self.embed_tokens.weight.requires_grad = False
-        self.embed_tokens = self.embed_tokens.to(("cuda:" + str(hf_device_map["model.embed_tokens"])))
-        self.hf_device_map["model.embed_tokens"] = hf_device_map["model.embed_tokens"]
-
-        # self.blackbone = llm.layers
-        self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.norm.weight = llm.norm.weight
-        self.norm.weight = self.norm.weight.to(llm.norm.weight.device)
-        self.norm.weight.requires_grad = False
-
-        self.gradient_checkpointing = False
-
-        config.hidden_size = int(config.hidden_size / LSTConfig.r)
-        config.intermediate_size = int(config.hidden_size / LSTConfig.r)
-
-        self.layers = nn.ModuleList([LSTLlamaDecoderLayer(llm.layers[i], config, LSTConfig) for i in range(config.num_hidden_layers)])
-        # self.z = nn.ParameterList(
-        #     [nn.Parameter(torch.tensor([0.5])).to(self.blackbone[i].mlp.gate_proj.weight.device) for i in
-        #      range(config.num_hidden_layers)])
-        #
-        # self.lst_layers = nn.ModuleList(
-        #     [LowRLlamaDecoderLayer(config, lstconfig=LSTConfig).to(self.blackbone[i].mlp.gate_proj.weight.device) for i
-        #      in range(config.num_hidden_layers)])
-        self.norm_lst = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps).to(llm.norm.weight.device)
-        self.norm_lst = self.norm_lst.to(("cuda:" + str(hf_device_map["model.norm"])))
-        self.hf_device_map["model.norm_lst"] = hf_device_map["model.norm"]
-        self.hf_device_map["model.norm"] = hf_device_map["model.norm"]
-
-        for i in range(config.num_hidden_layers):
-            gpu = "cuda:" + str(hf_device_map[f"model.layers.{i}"])
-            self.layers[i] = self.layers[i].to(gpu)
-            self.hf_device_map[f"model.layers.{i}"] = hf_device_map[f"model.layers.{i}"]
-
-        # Initialize weights and apply final processing
-        # self.post_init()
-
-    def get_input_embeddings(self):
-        return self.embed_tokens
-
-    def set_input_embeddings(self, value):
-        self.embed_tokens = value
-
-    # Copied from transformers.models.bart.modeling_bart.BartDecoder._prepare_decoder_attention_mask
-    def _prepare_decoder_attention_mask(self, attention_mask, input_shape, inputs_embeds, past_key_values_length):
-        # create causal mask
-        # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
-        combined_attention_mask = None
-        if input_shape[-1] > 1:
-            combined_attention_mask = _make_causal_mask(
-                input_shape,
-                inputs_embeds.dtype,
-                device=inputs_embeds.device,
-                past_key_values_length=past_key_values_length,
-            )
-
-        if attention_mask is not None:
-            # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
-            expanded_attn_mask = _expand_mask(attention_mask, inputs_embeds.dtype, tgt_len=input_shape[-1]).to(
-                inputs_embeds.device
-            )
-            combined_attention_mask = (
-                expanded_attn_mask if combined_attention_mask is None else expanded_attn_mask + combined_attention_mask
-            )
-
-        return combined_attention_mask
-
-    @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)
-    def forward(
-            self,
-            input_ids: torch.LongTensor = None,
-            attention_mask: Optional[torch.Tensor] = None,
-            position_ids: Optional[torch.LongTensor] = None,
-            past_key_values: Optional[List[torch.FloatTensor]] = None,
-            lst_past_key_values: Optional[List[torch.FloatTensor]] = None,
-            inputs_embeds: Optional[torch.FloatTensor] = None,
-            use_cache: Optional[bool] = None,
-            output_attentions: Optional[bool] = None,
-            output_hidden_states: Optional[bool] = None,
-            return_dict: Optional[bool] = None,
-    ) -> Union[Tuple, LSTBaseModelOutputWithPast]:
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-        use_cache = use_cache if use_cache is not None else self.config.use_cache
-
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        # retrieve input_ids and inputs_embeds
-        if input_ids is not None and inputs_embeds is not None:
-            raise ValueError("You cannot specify both decoder_input_ids and decoder_inputs_embeds at the same time")
-        elif input_ids is not None:
-            batch_size, seq_length = input_ids.shape
-        elif inputs_embeds is not None:
-            batch_size, seq_length, _ = inputs_embeds.shape
-        else:
-            raise ValueError("You have to specify either decoder_input_ids or decoder_inputs_embeds")
-
-        seq_length_with_past = seq_length
-        past_key_values_length = 0
-
-        if past_key_values is not None:
-            past_key_values_length = past_key_values[0][0].shape[2]
-            seq_length_with_past = seq_length_with_past + past_key_values_length
-
-        if position_ids is None:
-            device = input_ids.device if input_ids is not None else inputs_embeds.device
-            position_ids = torch.arange(
-                past_key_values_length, seq_length + past_key_values_length, dtype=torch.long, device=device
-            )
-            position_ids = position_ids.unsqueeze(0).view(-1, seq_length)
-        else:
-            position_ids = position_ids.view(-1, seq_length).long()
-
-        with torch.no_grad():
-            if inputs_embeds is None:
-                inputs_embeds = self.embed_tokens(input_ids)
-        # embed positions
-        if attention_mask is None:
-            attention_mask = torch.ones(
-                (batch_size, seq_length_with_past), dtype=torch.bool, device=inputs_embeds.device
-            )
-        attention_mask = self._prepare_decoder_attention_mask(
-            attention_mask, (batch_size, seq_length), inputs_embeds, past_key_values_length
-        )
-
-        hidden_states = inputs_embeds
-
-        if self.gradient_checkpointing and self.training:
-            if use_cache:
-                logger.warning_once(
-                    "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`..."
-                )
-                use_cache = False
-
-        # decoder layers
-        # all_hidden_states = () if output_hidden_states else None
-        # all_self_attns = () if output_attentions else None
-        # next_decoder_cache = () if use_cache else None
-
-        if output_hidden_states:
-            all_hidden_states = ()
-            lst_all_hidden_states = ()
-        else:
-            all_hidden_states = None
-            lst_all_hidden_states = None
-
-        if output_attentions:
-            all_self_attns = ()
-            lst_self_attns = ()
-        else:
-            all_self_attns = None
-            lst_self_attns = None
-
-        if use_cache:
-            next_decoder_cache = ()
-            lst_next_decoder_cache = ()
-        else:
-            next_decoder_cache = None
-            lst_next_decoder_cache = None
-
-        lst_hidden_states = self.layers[0].downsample(hidden_states)
-        for idx, decoder_layer in enumerate(self.layers):
-            print(idx)
-            if output_hidden_states:
-                all_hidden_states += (hidden_states,)
-
-            past_key_value = past_key_values[idx] if past_key_values is not None else None
-            lst_past_key_value = lst_past_key_values[idx] if lst_past_key_values is not None else None
-
-            if self.gradient_checkpointing and self.training:
-
-                def create_custom_forward(module):
-                    def custom_forward(*inputs):
-                        # None for past_key_value
-                        return module(*inputs, past_key_value, output_attentions)
-
-                    return custom_forward
-
-
-                layer_outputs = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(decoder_layer),
-                    hidden_states,
-                    lst_hidden_states,
-                    attention_mask,
-                    position_ids,
-                )
-            else:
-                layer_outputs = decoder_layer(
-                    hidden_states,
-                    lst_hidden_states,
-                    attention_mask=attention_mask,
-                    position_ids=position_ids,
-                    past_key_value=past_key_value,
-                    lst_past_key_value=lst_past_key_value,
-                    output_attentions=output_attentions,
-                    use_cache=use_cache,
-                )
-
-
-            hidden_states = layer_outputs[0][0]
-                # hidden_states += peft
-            lst_hidden_states = layer_outputs[1][0]
-            # hidden_states = layer_outputs[0]
-
-            if use_cache:
-                next_decoder_cache += (layer_outputs[0][2 if output_attentions else 1],)
-                lst_next_decoder_cache += (layer_outputs[1][2 if output_attentions else 1],)
-
-            if output_attentions:
-                all_self_attns += (layer_outputs[0][1],)
-                lst_self_attns += (layer_outputs[1][1],)
-
-        with torch.no_grad():
-            hidden_states = self.norm(hidden_states)
-        lst_hidden_states = self.norm_lst(lst_hidden_states)
-
-        # add hidden states from the last decoder layer
-        if output_hidden_states:
-            all_hidden_states += (hidden_states,)
-            lst_all_hidden_states += (lst_hidden_states,)
-
-        if use_cache:
-            next_cache = next_decoder_cache
-            lst_next_cache = lst_next_decoder_cache
-        else:
-            next_cache = None
-            lst_next_cache = None
-
-        if not return_dict:
-            return tuple(v for v in
-                         [lst_hidden_states, hidden_states, lst_next_cache, next_cache, lst_all_hidden_states,
-                          all_hidden_states, lst_self_attns, all_self_attns] if v is not None)
-
-        return LSTBaseModelOutputWithPast(
-            last_lst_hidden_states=lst_hidden_states,
-            last_hidden_states=hidden_states,
-            lst_past_key_values=lst_next_cache,
-            past_key_values=next_cache,
-            lst_hidden_states=lst_all_hidden_states,
-            hidden_states=all_hidden_states,
-            lst_attentions=lst_self_attns,
-            attentions=all_self_attns,
-        )
-
-    def load_lst_state(self, path):
-
-        lst_layers_path = os.path.join(path, "lst_layers_parameters.pt")
-        # Load the lst_layers parameters
-        lst_layers_parameters = torch.load(lst_layers_path)
-        self.lst_layers.load_state_dict(lst_layers_parameters)
-
-        lst_z_path = os.path.join(path, "lst_z_parameters.pt")
-        lst_z_parameters = torch.load(lst_z_path)
-        self.z.load_state_dict(lst_z_parameters)
-
-        # lst_downsample_path = os.path.join(path, "lst_downsample_parameters.pt")
-        # lst_downsample_parameters = torch.load(lst_downsample_path)
-        # self.downsample.load_state_dict(lst_downsample_parameters)
-
-        lst_norm_path = os.path.join(path, "lst_norm_parameters.pt")
-        lst_norm_parameters = torch.load(lst_norm_path)
-        self.norm_lst.load_state_dict(lst_norm_parameters)
-
-    def save_lst_state(self, path):
-
-        lst_layers_path = os.path.join(path, "lst_layers_parameters.pt")
-        torch.save(self.lst_layers.state_dict(), lst_layers_path)
-
-        lst_z_path = os.path.join(path, "lst_z_parameters.pt")
-        torch.save(self.z.state_dict(), lst_z_path)
-
-        # lst_downsample_path = os.path.join(path, "lst_downsample_parameters.pt")
-        # torch.save(self.downsample.state_dict(), lst_downsample_path)
-
-        lst_norm_path = os.path.join(path, "lst_norm_parameters.pt")
-        torch.save(self.norm_lst.state_dict(), lst_norm_path)
-
+        qst_norm_path = os.path.join(path, "qst_norm_parameters.pt")
+        torch.save(self.norm_qst.state_dict(), qst_norm_path)
 
 class LlamaForCausalLM(LlamaPreTrainedModel):
     _tied_weights_keys = ["lm_head.weight"]
@@ -1977,240 +1213,18 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         return reordered_past
 
 
-class LSTLlamaForCausalLM(LlamaPreTrainedModel):
+class QSTLlamaForCausalLM(LlamaPreTrainedModel):
     _tied_weights_keys = ["lm_head.weight"]
 
-    def __init__(self, llm: LlamaForCausalLM, config, lstconfig):
+    def __init__(self, llm: LlamaForCausalLM, config, qstconfig):
         super().__init__(config)
         self.hidden_size = config.hidden_size
         self.vocab_size = config.vocab_size
-        self.model = LSTLlamaModel(llm.model, config, lstconfig,llm.hf_device_map)
-        self.hf_device_map = self.model.hf_device_map
-
-        self.lm_head_z = nn.Parameter(torch.Tensor([1.0 for i in range(self.hidden_size)])).to(llm.lm_head.weight.device)
-        self.lm_head = nn.Linear(self.hidden_size, self.vocab_size, bias=False).to(llm.lm_head.weight.device)
-        self.lm_head.weight = llm.lm_head.weight
-        self.lm_head.weight.requires_grad = False
-        # print(llm.lm_head.weight.shape)
-
-        self.hf_device_map["lm_head"] = llm.hf_device_map["lm_head"]
-        self.hf_device_map["lm_head_z"] = llm.hf_device_map["lm_head"]
-
-        self.upsample = nn.Linear(int(self.hidden_size / lstconfig.r), self.hidden_size).to(llm.lm_head.weight.device)
-        self.hf_device_map["upsample"] = llm.hf_device_map["lm_head"]
-
-        del llm
-
-        # Initialize weights and apply final processing
-        # self.post_init()
-
-    def get_input_embeddings(self):
-        return self.model.embed_tokens
-
-    def set_input_embeddings(self, value):
-        self.model.embed_tokens = value
-
-    def get_output_embeddings(self):
-        return self.lm_head
-
-    def set_output_embeddings(self, new_embeddings):
-        self.lm_head = new_embeddings
-
-    def set_decoder(self, decoder):
-        self.model = decoder
-
-    def get_decoder(self):
-        return self.model
-
-    @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)
-    @replace_return_docstrings(output_type=CausalLMOutputWithPast, config_class=_CONFIG_FOR_DOC)
-    def forward(
-            self,
-            input_ids: torch.LongTensor = None,
-            attention_mask: Optional[torch.Tensor] = None,
-            position_ids: Optional[torch.LongTensor] = None,
-            past_key_values: Optional[List[torch.FloatTensor]] = None,
-            inputs_embeds: Optional[torch.FloatTensor] = None,
-            labels: Optional[torch.LongTensor] = None,
-            use_cache: Optional[bool] = None,
-            output_attentions: Optional[bool] = None,
-            output_hidden_states: Optional[bool] = None,
-            return_dict: Optional[bool] = None,
-    ) -> Union[Tuple, CausalLMOutputWithPast]:
-        r"""
-        Args:
-            labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
-                Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
-                config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
-                (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
-
-        Returns:
-
-        Example:
-
-        ```python
-        >>> from transformers import AutoTokenizer, LlamaForCausalLM
-
-        >>> model = LlamaForCausalLM.from_pretrained(PATH_TO_CONVERTED_WEIGHTS)
-        >>> tokenizer = AutoTokenizer.from_pretrained(PATH_TO_CONVERTED_TOKENIZER)
-
-        >>> prompt = "Hey, are you conscious? Can you talk to me?"
-        >>> inputs = tokenizer(prompt, return_tensors="pt")
-
-        >>> # Generate
-        >>> generate_ids = model.generate(inputs.input_ids, max_length=30)
-        >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-        "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
-        ```"""
-
-        output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
-        output_hidden_states = (
-            output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
-        )
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        # decoder outputs consists of (dec_features, layer_state, dec_hidden, dec_attn)
-        outputs = self.model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )
-
-        if not return_dict:
-            lst_hidden_states = outputs[0]
-            hidden_states = outputs[1]
-        else:
-            hidden_states = outputs.last_hidden_states
-            lst_hidden_states = outputs.last_lst_hidden_states
-
-        # hidden_states = outputs[0]
-        lm_head_z = torch.sigmoid(self.lm_head_z)
-        lst_hidden_states = (1 - lm_head_z) * self.upsample(lst_hidden_states) + lm_head_z * hidden_states
-        # logits = self.score(lst_hidden_states)
-
-
-        if self.config.pretraining_tp > 1:
-            lm_head_slices = self.lm_head.weight.split(self.vocab_size // self.config.pretraining_tp, dim=0)
-            logits = [F.linear(lst_hidden_states, lm_head_slices[i]) for i in range(self.config.pretraining_tp)]
-            logits = torch.cat(logits, dim=-1)
-        else:
-            logits = self.lm_head(lst_hidden_states)
-        logits = logits.float()
-
-        # print(logits.shape)
-        # exit(0)
-
-        loss = None
-        if labels is not None:
-            # Shift so that tokens < n predict n
-            shift_logits = logits[..., :-1, :].contiguous()
-            shift_labels = labels[..., 1:].contiguous()
-            # Flatten the tokens
-            loss_fct = CrossEntropyLoss()
-            shift_logits = shift_logits.view(-1, self.vocab_size+1)
-            shift_labels = shift_labels.view(-1)
-            # Enable model parallelism
-            shift_labels = shift_labels.to(shift_logits.device)
-            loss = loss_fct(shift_logits, shift_labels).to("cuda:0")
-
-        if not return_dict:
-            output = (logits,) + outputs[1:]
-            return (loss,) + output if loss is not None else output
-
-        return CausalLMOutputWithPast(
-            loss=loss,
-            logits=logits,
-            past_key_values=outputs.past_key_values,
-            hidden_states=outputs.hidden_states,
-            attentions=outputs.attentions,
-        )
-
-    def prepare_inputs_for_generation(
-            self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
-    ):
-        if past_key_values:
-            input_ids = input_ids[:, -1:]
-
-        position_ids = kwargs.get("position_ids", None)
-        if attention_mask is not None and position_ids is None:
-            # create position_ids on the fly for batch generation
-            position_ids = attention_mask.long().cumsum(-1) - 1
-            position_ids.masked_fill_(attention_mask == 0, 1)
-            if past_key_values:
-                position_ids = position_ids[:, -1].unsqueeze(-1)
-
-        # if `inputs_embeds` are passed, we only want to use them in the 1st generation step
-        if inputs_embeds is not None and past_key_values is None:
-            model_inputs = {"inputs_embeds": inputs_embeds}
-        else:
-            model_inputs = {"input_ids": input_ids}
-
-        model_inputs.update(
-            {
-                "position_ids": position_ids,
-                "past_key_values": past_key_values,
-                "use_cache": kwargs.get("use_cache"),
-                "attention_mask": attention_mask,
-            }
-        )
-        return model_inputs
-
-    @staticmethod
-    def _reorder_cache(past_key_values, beam_idx):
-        reordered_past = ()
-        for layer_past in past_key_values:
-            reordered_past += (
-                tuple(past_state.index_select(0, beam_idx.to(past_state.device)) for past_state in layer_past),
-            )
-        return reordered_past
-
-    def load_lst_state(self, path):
-
-        self.model.load_lst_state(path)
-
-        lst_upsample_path = os.path.join(path, "lst_upsample_parameters.pt")
-        lst_upsample_parameters = torch.load(lst_upsample_path)
-        self.upsample.load_state_dict(lst_upsample_parameters)
-
-        lm_head_z_path = os.path.join(path, "lm_head_z_path.pt")
-        self.lm_head_z= torch.load(lm_head_z_path)
-        # self.lm_head_z.load_state_dict(lm_head_z_parameters)
-        # lst_lm_head_path = os.path.join(path, "lst_lm_head_parameters.pt")
-        # lst_lm_head_parameters = torch.load(lst_lm_head_path)
-        # self.lm_head.load_state_dict(lst_lm_head_parameters)
-
-    def save_lst_state(self, path):
-
-        self.model.save_lst_state(path)
-
-        lst_upsample_path = os.path.join(path, "lst_upsample_parameters.pt")
-        torch.save(self.upsample.state_dict(), lst_upsample_path)
-
-        # lst_lm_head_path = os.path.join(path, "lst_lm_head_parameters.pt")
-        # torch.save(self.lm_head.state_dict(), lst_lm_head_path)
-
-        lm_head_z_path = os.path.join(path, "lm_head_z_path.pt")
-        torch.save(self.lm_head_z, lm_head_z_path)
-
-
-class LSTLlamaForCausalLM_v2(LlamaPreTrainedModel):
-    _tied_weights_keys = ["lm_head.weight"]
-
-    def __init__(self, llm: LlamaForCausalLM, config, lstconfig):
-        super().__init__(config)
-        self.hidden_size = config.hidden_size
-        self.vocab_size = config.vocab_size
-        self.model = LSTLlamaModel_v2(llm.model, config, lstconfig)
+        self.model = QSTLlamaModel(llm.model, config, qstconfig)
 
         self.lm_head = nn.Linear(self.hidden_size, config.vocab_size, bias=False)
 
-        # self.upsample = nn.Linear(int(self.hidden_size / lstconfig.r), self.hidden_size)
+        self.upsample = nn.Linear(int(self.hidden_size / qstconfig.r), self.hidden_size)
 
         del llm
 
@@ -2296,22 +1310,22 @@ class LSTLlamaForCausalLM_v2(LlamaPreTrainedModel):
         )
 
         if not return_dict:
-            lst_hidden_states = outputs[0]
+            qst_hidden_states = outputs[0]
             # hidden_states = outputs[1]
         else:
             # hidden_states = outputs.last_hidden_states
-            lst_hidden_states = outputs.last_lst_hidden_states
+            qst_hidden_states = outputs.last_qst_hidden_states
 
         # hidden_states = outputs[0]
-        # lst_hidden_states = self.upsample(lst_hidden_states)
-        # logits = self.score(lst_hidden_states)
+        qst_hidden_states = self.upsample(qst_hidden_states)
+        # logits = self.score(qst_hidden_states)
 
         if self.config.pretraining_tp > 1:
             lm_head_slices = self.lm_head.weight.split(self.vocab_size // self.config.pretraining_tp, dim=0)
-            logits = [F.linear(lst_hidden_states, lm_head_slices[i]) for i in range(self.config.pretraining_tp)]
+            logits = [F.linear(qst_hidden_states, lm_head_slices[i]) for i in range(self.config.pretraining_tp)]
             logits = torch.cat(logits, dim=-1)
         else:
-            logits = self.lm_head(lst_hidden_states)
+            logits = self.lm_head(qst_hidden_states)
         logits = logits.float()
 
         loss = None
@@ -2378,20 +1392,20 @@ class LSTLlamaForCausalLM_v2(LlamaPreTrainedModel):
             )
         return reordered_past
 
-    def load_lst_state(self, path):
+    def load_qst_state(self, path):
 
-        self.model.load_lst_state(path)
+        self.model.load_qst_state(path)
 
-        # lst_upsample_path = os.path.join(path, "lst_upsample_parameters.pt")
-        # lst_upsample_parameters = torch.load(lst_upsample_path)
-        # self.upsample.load_state_dict(lst_upsample_parameters)
+        qst_upsample_path = os.path.join(path, "qst_upsample_parameters.pt")
+        qst_upsample_parameters = torch.load(qst_upsample_path)
+        self.upsample.load_state_dict(qst_upsample_parameters)
 
-    def save_lst_state(self, path):
+    def save_qst_state(self, path):
 
-        self.model.save_lst_state(path)
+        self.model.save_qst_state(path)
 
-        # lst_upsample_path = os.path.join(path, "lst_upsample_parameters.pt")
-        # torch.save(self.upsample.state_dict(), lst_upsample_path)
+        qst_upsample_path = os.path.join(path, "qst_upsample_parameters.pt")
+        torch.save(self.upsample.state_dict(), qst_upsample_path)
 
 
 @add_start_docstrings(
@@ -2515,15 +1529,14 @@ class LlamaForSequenceClassification(LlamaPreTrainedModel):
             attentions=transformer_outputs.attentions,
         )
 
-
-class LSTLlamaForSequenceClassification(LlamaPreTrainedModel):
-    def __init__(self, llm: LlamaForSequenceClassification, config: LlamaConfig, lstconfig):
+class QSTLlamaForSequenceClassification(LlamaPreTrainedModel):
+    def __init__(self, llm: LlamaForSequenceClassification, config: LlamaConfig, qstconfig):
         super().__init__(config)
         self.num_labels = llm.num_labels
         self.hidden_size = config.hidden_size
-        self.model = LSTLlamaModel(llm.model, config, lstconfig)
+        self.model = QSTLlamaModel(llm.model, config, qstconfig)
 
-        self.upsample = nn.Linear(int(self.hidden_size / lstconfig.r), self.hidden_size).to(
+        self.upsample = nn.Linear(int(self.hidden_size / qstconfig.r), self.hidden_size).to(
             llm.model.device)
         self.score = nn.Linear(self.hidden_size, self.num_labels, bias=False)
         self.config = llm.config
@@ -2572,14 +1585,14 @@ class LSTLlamaForSequenceClassification(LlamaPreTrainedModel):
         )
 
         if not return_dict:
-            lst_hidden_states = transformer_outputs[0]
+            qst_hidden_states = transformer_outputs[0]
             # hidden_states = transformer_outputs[1]
         else:
             # hidden_states = transformer_outputs.last_hidden_states
-            lst_hidden_states = transformer_outputs.last_lst_hidden_states
+            qst_hidden_states = transformer_outputs.last_qst_hidden_states
 
-        lst_hidden_states = self.upsample(lst_hidden_states)
-        logits = self.score(lst_hidden_states)
+        qst_hidden_states = self.upsample(qst_hidden_states)
+        logits = self.score(qst_hidden_states)
 
         if input_ids is not None:
             batch_size = input_ids.shape[0]
@@ -2635,152 +1648,17 @@ class LSTLlamaForSequenceClassification(LlamaPreTrainedModel):
             attentions=transformer_outputs.attentions,
         )
 
-    def load_lst_state(self, path):
+    def load_qst_state(self, path):
 
-        self.model.load_lst_state(path)
+        self.model.load_qst_state(path)
 
-        lst_upsample_path = os.path.join(path, "lst_upsample_parameters.pt")
-        lst_upsample_parameters = torch.load(lst_upsample_path)
-        self.upsample.load_state_dict(lst_upsample_parameters)
+        qst_upsample_path = os.path.join(path, "qst_upsample_parameters.pt")
+        qst_upsample_parameters = torch.load(qst_upsample_path)
+        self.upsample.load_state_dict(qst_upsample_parameters)
 
-    def save_lst_state(self, path):
+    def save_qst_state(self, path):
 
-        self.model.save_lst_state(path)
+        self.model.save_qst_state(path)
 
-        lst_upsample_path = os.path.join(path, "lst_upsample_parameters.pt")
-        torch.save(self.upsample.state_dict(), lst_upsample_path)
-
-
-class LSTLlamaForSequenceClassification_v2(LlamaPreTrainedModel):
-    def __init__(self, llm: LlamaForSequenceClassification, config: LlamaConfig, lstconfig):
-        super().__init__(config)
-        self.num_labels = llm.num_labels
-        self.hidden_size = config.hidden_size
-        self.model = LSTLlamaModel_v2(llm.model, config, lstconfig)
-
-        # self.upsample = nn.Linear(int(self.hidden_size / lstconfig.r), self.hidden_size).to(
-        #     llm.model.device)
-        self.score = nn.Linear(self.hidden_size, self.num_labels, bias=False)
-        self.config = llm.config
-
-        # Initialize weights and apply final processing
-        # self.post_init()
-
-    def get_input_embeddings(self):
-        return self.model.embed_tokens
-
-    def set_input_embeddings(self, value):
-        self.model.embed_tokens = value
-
-    @add_start_docstrings_to_model_forward(LLAMA_INPUTS_DOCSTRING)
-    def forward(
-            self,
-            input_ids: torch.LongTensor = None,
-            attention_mask: Optional[torch.Tensor] = None,
-            position_ids: Optional[torch.LongTensor] = None,
-            past_key_values: Optional[List[torch.FloatTensor]] = None,
-            inputs_embeds: Optional[torch.FloatTensor] = None,
-            labels: Optional[torch.LongTensor] = None,
-            use_cache: Optional[bool] = None,
-            output_attentions: Optional[bool] = None,
-            output_hidden_states: Optional[bool] = None,
-            return_dict: Optional[bool] = None,
-    ) -> Union[Tuple, SequenceClassifierOutputWithPast]:
-        r"""
-        labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
-            Labels for computing the sequence classification/regression loss. Indices should be in `[0, ...,
-            config.num_labels - 1]`. If `config.num_labels == 1` a regression loss is computed (Mean-Square loss), If
-            `config.num_labels > 1` a classification loss is computed (Cross-Entropy).
-        """
-        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
-
-        transformer_outputs = self.model(
-            input_ids,
-            attention_mask=attention_mask,
-            position_ids=position_ids,
-            past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
-            return_dict=return_dict,
-        )
-
-        if not return_dict:
-            lst_hidden_states = transformer_outputs[0]
-            # hidden_states = transformer_outputs[1]
-        else:
-            # hidden_states = transformer_outputs.last_hidden_states
-            lst_hidden_states = transformer_outputs.last_lst_hidden_states
-
-        # lst_hidden_states = self.upsample(lst_hidden_states)
-        logits = self.score(lst_hidden_states)
-
-        if input_ids is not None:
-            batch_size = input_ids.shape[0]
-        else:
-            batch_size = inputs_embeds.shape[0]
-
-        if self.config.pad_token_id is None and batch_size != 1:
-            raise ValueError("Cannot handle batch sizes > 1 if no padding token is defined.")
-        if self.config.pad_token_id is None:
-            sequence_lengths = -1
-        else:
-            if input_ids is not None:
-                sequence_lengths = (torch.eq(input_ids, self.config.pad_token_id).long().argmax(-1) - 1).to(
-                    logits.device
-                )
-            else:
-                sequence_lengths = -1
-
-        pooled_logits = logits[torch.arange(batch_size, device=logits.device), sequence_lengths]
-
-        loss = None
-        if labels is not None:
-            labels = labels.to(logits.device)
-            if self.config.problem_type is None:
-                if self.num_labels == 1:
-                    self.config.problem_type = "regression"
-                elif self.num_labels > 1 and (labels.dtype == torch.long or labels.dtype == torch.int):
-                    self.config.problem_type = "single_label_classification"
-                else:
-                    self.config.problem_type = "multi_label_classification"
-
-            if self.config.problem_type == "regression":
-                loss_fct = MSELoss()
-                if self.num_labels == 1:
-                    loss = loss_fct(pooled_logits.squeeze(), labels.squeeze())
-                else:
-                    loss = loss_fct(pooled_logits, labels)
-            elif self.config.problem_type == "single_label_classification":
-                loss_fct = CrossEntropyLoss()
-                loss = loss_fct(pooled_logits.view(-1, self.num_labels), labels.view(-1))
-            elif self.config.problem_type == "multi_label_classification":
-                loss_fct = BCEWithLogitsLoss()
-                loss = loss_fct(pooled_logits, labels)
-        if not return_dict:
-            output = (pooled_logits,) + transformer_outputs[1:]
-            return ((loss,) + output) if loss is not None else output
-
-        return SequenceClassifierOutputWithPast(
-            loss=loss,
-            logits=pooled_logits,
-            past_key_values=transformer_outputs.past_key_values,
-            hidden_states=transformer_outputs.hidden_states,
-            attentions=transformer_outputs.attentions,
-        )
-
-    def load_lst_state(self, path):
-
-        self.model.load_lst_state(path)
-
-        # lst_upsample_path = os.path.join(path, "lst_upsample_parameters.pt")
-        # lst_upsample_parameters = torch.load(lst_upsample_path)
-        # self.upsample.load_state_dict(lst_upsample_parameters)
-
-    def save_lst_state(self, path):
-
-        self.model.save_lst_state(path)
-
-        # lst_upsample_path = os.path.join(path, "lst_upsample_parameters.pt")
-        # torch.save(self.upsample.state_dict(), lst_upsample_path)
+        qst_upsample_path = os.path.join(path, "qst_upsample_parameters.pt")
+        torch.save(self.upsample.state_dict(), qst_upsample_path)
