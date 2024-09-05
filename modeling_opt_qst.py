@@ -1532,6 +1532,7 @@ class QSTOPTForCausalLM(OPTPreTrainedModel):
         self.model = QSTOPTModel(OPTForCausalLM.model, config, QSTConfig)
 
         # the lm_head weight is automatically tied to the embed tokens weight
+        self.lm_head_z = nn.Parameter(torch.zeros(config.config.hidden_size))
         self.upsample = nn.Linear(self.qst_hidden_dim, config.word_embed_proj_dim)
         self.lm_head = nn.Linear(config.word_embed_proj_dim, config.vocab_size, bias=False)
         # self.lm_head.weight.requires_grad = False
@@ -1672,13 +1673,12 @@ class QSTOPTForCausalLM(OPTPreTrainedModel):
             hidden_states = outputs.last_hidden_states
             qst_hidden_states = outputs.last_qst_hidden_states
 
-        # print(f"out:{outputs[0].dtype}")
-        # print(f"upsample:{self.upsample.weight.dtype}")
-        # print(f"lm_head:{self.lm_head.weight.dtype}")
-        # exit(0)
         qst_hidden_states = self.upsample(qst_hidden_states)
+        lm_head_z = torch.sigmoid(self.lm_head_z)
+        final_hidden_states = lm_head_z * qst_hidden_states + (1 - lm_head_z) * hidden_states
+        
         # with torch.no_grad():
-        logits = self.lm_head(qst_hidden_states).contiguous()
+        logits = self.lm_head(final_hidden_states).contiguous()
 
         loss = None
         if labels is not None:
@@ -1739,12 +1739,19 @@ class QSTOPTForCausalLM(OPTPreTrainedModel):
         qst_upsample_parameters = torch.load(qst_upsample_path)
         self.upsample.load_state_dict(qst_upsample_parameters)
 
+        lm_head_z_path = os.path.join(path, "lm_head_z_parameters.pt")
+        lm_head_z_parameters = torch.load(lm_head_z_path)
+        self.lm_head_z.load_state_dict(lm_head_z_parameters)
+
     def save_qst_state(self, path):
 
         self.model.save_qst_state(path)
 
         qst_upsample_path = os.path.join(path, "qst_upsample_parameters.pt")
         torch.save(self.upsample.state_dict(), qst_upsample_path)
+
+        lm_head_z_path = os.path.join(path, "lm_head_z_parameters.pt")
+        torch.save(self.lm_head_z.state_dict(), lm_head_z_path)
 
 
 @add_start_docstrings(
@@ -1883,6 +1890,7 @@ class QSTOPTForSequenceClassification(OPTPreTrainedModel):
         self.qst_hidden_dim = int(config.hidden_size / QSTConfig.r)
         self.model = QSTOPTModel(OPTForSequenceClassification.model, config, QSTConfig)
 
+        self.lm_head_z = nn.Parameter(torch.zeros(config.config.hidden_size))
         self.upsample = nn.Linear(self.qst_hidden_dim, config.word_embed_proj_dim)
         self.score = nn.Linear(config.word_embed_proj_dim, self.num_labels, bias=False)
 
@@ -1940,8 +1948,10 @@ class QSTOPTForSequenceClassification(OPTPreTrainedModel):
             qst_hidden_states = transformer_outputs.last_qst_hidden_states
 
         qst_hidden_states = self.upsample(qst_hidden_states)
-
-        logits = self.score(qst_hidden_states)
+        lm_head_z = torch.sigmoid(self.lm_head_z)
+        final_hidden_states = lm_head_z * qst_hidden_states + (1 - lm_head_z) * hidden_states
+        
+        logits = self.score(final_hidden_states)
 
         if input_ids is not None:
             batch_size, sequence_length = input_ids.shape[:2]
@@ -2010,12 +2020,19 @@ class QSTOPTForSequenceClassification(OPTPreTrainedModel):
         qst_upsample_parameters = torch.load(qst_upsample_path)
         self.upsample.load_state_dict(qst_upsample_parameters)
 
+        lm_head_z_path = os.path.join(path, "lm_head_z_parameters.pt")
+        lm_head_z_parameters = torch.load(lm_head_z_path)
+        self.lm_head_z.load_state_dict(lm_head_z_parameters)
+
     def save_qst_state(self, path):
 
         self.model.save_qst_state(path)
 
         qst_upsample_path = os.path.join(path, "qst_upsample_parameters.pt")
         torch.save(self.upsample.state_dict(), qst_upsample_path)
+
+        lm_head_z_path = os.path.join(path, "lm_head_z_parameters.pt")
+        torch.save(self.lm_head_z.state_dict(), lm_head_z_path)
 
 
 @add_start_docstrings(
