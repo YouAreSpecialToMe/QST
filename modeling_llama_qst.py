@@ -1223,6 +1223,7 @@ class QSTLlamaForCausalLM(LlamaPreTrainedModel):
         self.model = QSTLlamaModel(llm.model, config, qstconfig)
 
         self.lm_head = nn.Linear(self.hidden_size, config.vocab_size, bias=False)
+        self.lm_head_z = nn.Parameter(torch.zeros(config.config.hidden_size))
 
         self.upsample = nn.Linear(int(self.hidden_size / qstconfig.r), self.hidden_size)
 
@@ -1311,21 +1312,24 @@ class QSTLlamaForCausalLM(LlamaPreTrainedModel):
 
         if not return_dict:
             qst_hidden_states = outputs[0]
-            # hidden_states = outputs[1]
+            hidden_states = outputs[1]
         else:
-            # hidden_states = outputs.last_hidden_states
+            hidden_states = outputs.last_hidden_states
             qst_hidden_states = outputs.last_qst_hidden_states
 
         # hidden_states = outputs[0]
         qst_hidden_states = self.upsample(qst_hidden_states)
+        lm_head_z = torch.sigmoid(self.lm_head_z)
+        final_hidden_states = lm_head_z * qst_hidden_states + (1 - lm_head_z) * hidden_states
+        
         # logits = self.score(qst_hidden_states)
 
         if self.config.pretraining_tp > 1:
             lm_head_slices = self.lm_head.weight.split(self.vocab_size // self.config.pretraining_tp, dim=0)
-            logits = [F.linear(qst_hidden_states, lm_head_slices[i]) for i in range(self.config.pretraining_tp)]
+            logits = [F.linear(final_hidden_states, lm_head_slices[i]) for i in range(self.config.pretraining_tp)]
             logits = torch.cat(logits, dim=-1)
         else:
-            logits = self.lm_head(qst_hidden_states)
+            logits = self.lm_head(final_hidden_states)
         logits = logits.float()
 
         loss = None
@@ -1400,12 +1404,19 @@ class QSTLlamaForCausalLM(LlamaPreTrainedModel):
         qst_upsample_parameters = torch.load(qst_upsample_path)
         self.upsample.load_state_dict(qst_upsample_parameters)
 
+        lm_head_z_path = os.path.join(path, "lm_head_z_parameters.pt")
+        lm_head_z_parameters = torch.load(lm_head_z_path)
+        self.lm_head_z.load_state_dict(lm_head_z_parameters)
+
     def save_qst_state(self, path):
 
         self.model.save_qst_state(path)
 
         qst_upsample_path = os.path.join(path, "qst_upsample_parameters.pt")
         torch.save(self.upsample.state_dict(), qst_upsample_path)
+
+        lm_head_z_path = os.path.join(path, "lm_head_z_parameters.pt")
+        torch.save(self.lm_head_z.state_dict(), lm_head_z_path)
 
 
 @add_start_docstrings(
@@ -1538,6 +1549,7 @@ class QSTLlamaForSequenceClassification(LlamaPreTrainedModel):
 
         self.upsample = nn.Linear(int(self.hidden_size / qstconfig.r), self.hidden_size).to(
             llm.model.device)
+        self.lm_head_z = nn.Parameter(torch.zeros(config.config.hidden_size))
         self.score = nn.Linear(self.hidden_size, self.num_labels, bias=False)
         self.config = llm.config
 
@@ -1586,13 +1598,15 @@ class QSTLlamaForSequenceClassification(LlamaPreTrainedModel):
 
         if not return_dict:
             qst_hidden_states = transformer_outputs[0]
-            # hidden_states = transformer_outputs[1]
+            hidden_states = transformer_outputs[1]
         else:
-            # hidden_states = transformer_outputs.last_hidden_states
+            hidden_states = transformer_outputs.last_hidden_states
             qst_hidden_states = transformer_outputs.last_qst_hidden_states
 
         qst_hidden_states = self.upsample(qst_hidden_states)
-        logits = self.score(qst_hidden_states)
+        lm_head_z = torch.sigmoid(self.lm_head_z)
+        final_hidden_states = lm_head_z * qst_hidden_states + (1 - lm_head_z) * hidden_states
+        logits = self.score(final_hidden_states)
 
         if input_ids is not None:
             batch_size = input_ids.shape[0]
@@ -1656,9 +1670,16 @@ class QSTLlamaForSequenceClassification(LlamaPreTrainedModel):
         qst_upsample_parameters = torch.load(qst_upsample_path)
         self.upsample.load_state_dict(qst_upsample_parameters)
 
+        lm_head_z_path = os.path.join(path, "lm_head_z_parameters.pt")
+        lm_head_z_parameters = torch.load(lm_head_z_path)
+        self.lm_head_z.load_state_dict(lm_head_z_parameters)
+
     def save_qst_state(self, path):
 
         self.model.save_qst_state(path)
 
         qst_upsample_path = os.path.join(path, "qst_upsample_parameters.pt")
         torch.save(self.upsample.state_dict(), qst_upsample_path)
+
+        lm_head_z_path = os.path.join(path, "lm_head_z_parameters.pt")
+        torch.save(self.lm_head_z.state_dict(), lm_head_z_path)
