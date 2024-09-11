@@ -1740,8 +1740,8 @@ class QSTOPTForCausalLM(OPTPreTrainedModel):
         self.upsample.load_state_dict(qst_upsample_parameters)
 
         lm_head_z_path = os.path.join(path, "lm_head_z_parameters.pt")
-        lm_head_z_parameters = torch.load(lm_head_z_path)
-        self.lm_head_z.load_state_dict(lm_head_z_parameters)
+        lm_head_z = torch.load(lm_head_z_path)
+        self.lm_head_z = lm_head_z
 
     def save_qst_state(self, path):
 
@@ -1751,7 +1751,7 @@ class QSTOPTForCausalLM(OPTPreTrainedModel):
         torch.save(self.upsample.state_dict(), qst_upsample_path)
 
         lm_head_z_path = os.path.join(path, "lm_head_z_parameters.pt")
-        torch.save(self.lm_head_z.state_dict(), lm_head_z_path)
+        torch.save(self.lm_head_z, lm_head_z_path)
 
 
 @add_start_docstrings(
@@ -2021,8 +2021,8 @@ class QSTOPTForSequenceClassification(OPTPreTrainedModel):
         self.upsample.load_state_dict(qst_upsample_parameters)
 
         lm_head_z_path = os.path.join(path, "lm_head_z_parameters.pt")
-        lm_head_z_parameters = torch.load(lm_head_z_path)
-        self.lm_head_z.load_state_dict(lm_head_z_parameters)
+        lm_head_z = torch.load(lm_head_z_path)
+        self.lm_head_z = lm_head_z
 
     def save_qst_state(self, path):
 
@@ -2032,7 +2032,7 @@ class QSTOPTForSequenceClassification(OPTPreTrainedModel):
         torch.save(self.upsample.state_dict(), qst_upsample_path)
 
         lm_head_z_path = os.path.join(path, "lm_head_z_parameters.pt")
-        torch.save(self.lm_head_z.state_dict(), lm_head_z_path)
+        torch.save(self.lm_head_z, lm_head_z_path)
 
 
 @add_start_docstrings(
