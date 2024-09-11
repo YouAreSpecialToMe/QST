@@ -1223,7 +1223,7 @@ class QSTLlamaForCausalLM(LlamaPreTrainedModel):
         self.model = QSTLlamaModel(llm.model, config, qstconfig)
 
         self.lm_head = nn.Linear(self.hidden_size, config.vocab_size, bias=False)
-        self.lm_head_z = nn.Parameter(torch.zeros(config.hidden_size))
+        self.lm_head_z = nn.Parameter(torch.zeros(self.hidden_size))
 
         self.upsample = nn.Linear(int(self.hidden_size / qstconfig.r), self.hidden_size)
 
@@ -1549,7 +1549,7 @@ class QSTLlamaForSequenceClassification(LlamaPreTrainedModel):
 
         self.upsample = nn.Linear(int(self.hidden_size / qstconfig.r), self.hidden_size).to(
             llm.model.device)
-        self.lm_head_z = nn.Parameter(torch.zeros(config.config.hidden_size))
+        self.lm_head_z = nn.Parameter(torch.zeros(self.hidden_size))
         self.score = nn.Linear(self.hidden_size, self.num_labels, bias=False)
         self.config = llm.config
 
