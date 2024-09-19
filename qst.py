@@ -24,6 +24,7 @@ import pandas as pd
 import importlib
 from packaging import version
 from packaging.version import parse
+from datasets import load_from_disk
 
 import torch
 import transformers
@@ -291,6 +292,20 @@ class SavePeftModelCallback(transformers.TrainerCallback):
         else:
             checkpoint_folder = os.path.join(args.output_dir, f"{PREFIX_CHECKPOINT_DIR}-{state.global_step}")
 
+        #print(f"Checkpoint folder path: {checkpoint_folder}")
+        
+        # if os.path.exists(checkpoint_folder):
+        #     print(f"目录存在: {checkpoint_folder}")
+        # else:
+        #     print(f"目录不存在: {checkpoint_folder}")
+        
+        if not os.path.exists(checkpoint_folder):
+            try:
+                os.makedirs(checkpoint_folder, exist_ok=True)
+            except Exception as e:
+                print(f"创建目录失败: {e}")
+                raise
+
         kwargs["model"].save_qst_state(checkpoint_folder)
 
     def on_save(self, args, state, control, **kwargs):
@@ -366,7 +381,8 @@ def get_accelerate_model(args, checkpoint_dir):
         ),
         torch_dtype=(torch.float32 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32)),
         trust_remote_code=args.trust_remote_code,
-        use_auth_token=args.use_auth_token
+        use_auth_token=args.use_auth_token,
+        #local_files_only=True
     )
 
     # if "opt" in args.model_name_or_path:
@@ -459,6 +475,7 @@ def get_accelerate_model(args, checkpoint_dir):
         #     # device_map = infer_auto_device_map(model, no_split_module_classes=["OPTDecoderLayer"])
         #     # model = dispatch_model(model, device_map)
 
+
         # model.hf_device_map =
         # for name, param in model.named_parameters():
         #     if str(param.device) in "cuda:1":
@@ -492,7 +509,7 @@ def get_accelerate_model(args, checkpoint_dir):
             # model = get_peft_model(model, config)
 
     for name, module in model.named_modules():
-        if isinstance(module, LoraLayer):
+        if 'qst' or 'z' or 'downsample' or 'upsample' in name:
             if args.bf16:
                 module = module.to(torch.bfloat16)
         if 'norm' in name:
@@ -752,7 +769,8 @@ def make_data_module(tokenizer: transformers.PreTrainedTokenizer, args) -> Dict:
         return dataset
 
     # Load dataset.
-    dataset = load_data(args.dataset)
+    #dataset = load_data(args.dataset)
+    dataset = load_dataset("openassistant-guanaco")
     dataset = format_dataset(dataset, args.dataset_format)
 
     # Split train/eval, reduce size
