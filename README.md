@@ -97,7 +97,7 @@ Experiments show that QST can reduce the total memory footprint by up to 2.3 tim
  ```
 
 ## Contributing
-Anonymous.
+Zhengxin Zhang, Dan Zhao, Xupeng Miao, Gabriele Oliaro, Zhihao Zhang, Qing Li, Yong Jiang, and Zhihao Jia.
 
 ## License
 This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
