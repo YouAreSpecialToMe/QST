@@ -378,16 +378,6 @@ def get_accelerate_model(args, checkpoint_dir):
         #local_files_only=True
     )
 
-    # if "opt" in args.model_name_or_path:
-    #     device_map = infer_auto_device_map(model, no_split_module_classes=["OPTDecoderLayer"])
-    # elif "Llama" in args.model_name_or_path:
-    #     device_map = infer_auto_device_map(model, no_split_module_classes=["LlamaDecoderLayer"])
-    #
-    # model = dispatch_model(model, device_map)
-    # print(model.hf_device_map)
-    # hf_device_map = model.hf_device_map
-    # exit(0)
-
     if compute_dtype == torch.float16 and args.bits == 4:
         if torch.cuda.is_bf16_supported():
             print('=' * 80)
@@ -400,10 +390,6 @@ def get_accelerate_model(args, checkpoint_dir):
 
     setattr(model, 'model_parallel', True)
     setattr(model, 'is_parallelizable', True)
-    # print(getattr(model,"model_wrapped"))
-    # print(model.is_model_parallel)
-    # print(model.place_model_on_device)
-    # exit(0)
 
     model.config.torch_dtype = (torch.float32 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32))
 
@@ -469,17 +455,6 @@ def get_accelerate_model(args, checkpoint_dir):
         #     # model = dispatch_model(model, device_map)
 
 
-        # model.hf_device_map =
-        # for name, param in model.named_parameters():
-        #     if str(param.device) in "cuda:1":
-        #         print(f"{name} is on {param.device}")
-        #
-        # exit(0)
-        # model.hf_device_map = hf_device_map
-        # model.hf_device_map = {"":0}
-        # print(model.hf_device_map)
-        # exit(0)
-
         setattr(model, 'model_parallel', True)
         setattr(model, 'is_parallelizable', True)
 
@@ -490,16 +465,6 @@ def get_accelerate_model(args, checkpoint_dir):
             model.load_qst_state(checkpoint_dir)
         else:
             print(f'initing QST modules...')
-            # modules = find_all_linear_names(args, model)
-            # config = LoraConfig(
-            #     r=args.lora_r,
-            #     lora_alpha=args.lora_alpha,
-            #     target_modules=modules,
-            #     lora_dropout=args.lora_dropout,
-            #     bias="none",
-            #     task_type="CAUSAL_LM",
-            # )
-            # model = get_peft_model(model, config)
 
     for name, module in model.named_modules():
         if 'qst' or 'z' or 'downsample' or 'upsample' in name:
