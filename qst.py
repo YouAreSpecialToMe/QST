@@ -291,13 +291,6 @@ class SavePeftModelCallback(transformers.TrainerCallback):
             checkpoint_folder = os.path.join(state.best_model_checkpoint, "QST_model")
         else:
             checkpoint_folder = os.path.join(args.output_dir, f"{PREFIX_CHECKPOINT_DIR}-{state.global_step}")
-
-        #print(f"Checkpoint folder path: {checkpoint_folder}")
-        
-        # if os.path.exists(checkpoint_folder):
-        #     print(f"目录存在: {checkpoint_folder}")
-        # else:
-        #     print(f"目录不存在: {checkpoint_folder}")
         
         if not os.path.exists(checkpoint_folder):
             try:
