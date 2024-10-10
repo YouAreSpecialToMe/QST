@@ -123,6 +123,7 @@ class OPTLearnedPositionalEmbedding(nn.Embedding):
 
         return super().forward(positions + self.offset)
 
+
 class OPTAttention(nn.Module):
     """Multi-headed attention from 'Attention Is All You Need' paper"""
 
@@ -363,7 +364,6 @@ class OPTDecoderLayer(nn.Module):
         hidden_states = nn.functional.dropout(hidden_states, p=self.dropout, training=self.training)
 
         hidden_states = (residual + hidden_states).view(hidden_states_shape)
-
 
         # 350m applies layer norm AFTER attention
         if not self.do_layer_norm_before:
@@ -751,15 +751,19 @@ class OPTDecoder(OPTPreTrainedModel):
             attentions=all_self_attns,
         )
 
+
 class QSTOPTDecoder(OPTPreTrainedModel):
     """
     Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`OPTDecoderLayer`]
 
     Args:
         config: OPTConfig
+        QSTConfig
+        hf_device_map
+
     """
 
-    def __init__(self, OPTDecoder, config: OPTConfig, QSTConfig):
+    def __init__(self, OPTDecoder, config: OPTConfig, QSTConfig, hf_device_map):
         super().__init__(config)
         self.dropout = OPTDecoder.dropout
         self.layerdrop = OPTDecoder.layerdrop
@@ -768,15 +772,17 @@ class QSTOPTDecoder(OPTPreTrainedModel):
         self.vocab_size = OPTDecoder.vocab_size
         self.blackbone = OPTDecoder.layers
 
-        self.embed_tokens = nn.Embedding(self.vocab_size, config.word_embed_proj_dim, self.padding_idx).to(OPTDecoder.embed_tokens.weight.device)
+        self.embed_tokens = nn.Embedding(self.vocab_size, config.word_embed_proj_dim, self.padding_idx).to(
+            ("cuda:" + str(hf_device_map["model.embed_tokens"])))
         self.embed_tokens.weight = OPTDecoder.embed_tokens.weight
-        # self.embed_tokens.bias = OPTDecoder.embed_tokens.bias
         self.embed_tokens.weight.requires_grad = False
-        # self.embed_tokens.bias.requires_grad = False
+        self.hf_device_map["model.embed_tokens"] = hf_device_map["model.embed_tokens"]
 
-        self.embed_positions = OPTLearnedPositionalEmbedding(config.max_position_embeddings, config.hidden_size).to(OPTDecoder.embed_positions.weight.device)
+        self.embed_positions = OPTLearnedPositionalEmbedding(config.max_position_embeddings, config.hidden_size).to(
+            "cuda:" + str(hf_device_map["model.embed_positions"]))
         self.embed_positions.weight = OPTDecoder.embed_positions.weight
         self.embed_positions.weight.requires_grad = False
+        self.hf_device_map["model.embed_positions"] = hf_device_map["model.embed_positions"]
 
         self.downsample = nn.ModuleList([AdapterLinear(in_features=config.hidden_size,
                                                        out_features=int(config.hidden_size / QSTConfig.r),
@@ -788,25 +794,32 @@ class QSTOPTDecoder(OPTPreTrainedModel):
                                                        # weight_average=QSTConfig.weight_average,
                                                        add_layer_norm_after_adapter=QSTConfig.add_layer_norm_after_adapter,
                                                        add_layer_norm_before_adapter=QSTConfig.add_layer_norm_before_adapter,
-                                                       dropout=QSTConfig.dropout).to(self.blackbone[i].fc1.weight.device)
+                                                       dropout=QSTConfig.dropout)
                                          for i in range(config.num_hidden_layers)])
-        # self.downsample = nn.ModuleList([nn.Linear(in_features=config.hidden_size,out_features=int(config.hidden_size / QSTConfig.r))
-        #                                  for _ in range(config.num_hidden_layers)])
 
         self.z = nn.ParameterList(
-            [nn.Parameter(torch.tensor([0.5])).to(self.blackbone[i].fc1.weight.device) for i in
+            [nn.Parameter(torch.Tensor([1.0 for i in range(config.hidden_size)])) for i in
              range(config.num_hidden_layers)])
 
         if config.word_embed_proj_dim != config.hidden_size:
             if isinstance(OPTDecoder.project_out, bnb.nn.Linear8bitLt):
-                self.project_out = bnb.nn.Linear8bitLt(config.hidden_size, config.word_embed_proj_dim, bias=False)
+                self.project_out = bnb.nn.Linear8bitLt(config.hidden_size, config.word_embed_proj_dim, bias=False).to(
+                    "cuda:" + str(hf_device_map["model.project_out"]))
                 self.project_out.weight = OPTDecoder.project_out.weight
+                self.project_out.weight.requires_grad = False
+                self.hf_device_map["model.project_out"] = hf_device_map["model.project_out"]
             elif isinstance(OPTDecoder.project_out, bnb.nn.Linear4bit):
-                self.project_out = bnb.nn.Linear4bit(config.hidden_size, config.word_embed_proj_dim, bias=False)
+                self.project_out = bnb.nn.Linear4bit(config.hidden_size, config.word_embed_proj_dim, bias=False).to(
+                    "cuda:" + str(hf_device_map["model.project_out"]))
                 self.project_out.weight = OPTDecoder.project_out.weight
+                self.hf_device_map["model.project_out"] = hf_device_map["model.project_out"]
+                self.project_out.weight.requires_grad = False
             elif isinstance(OPTDecoder.project_out, nn.Linear):
-                self.project_out = nn.Linear(config.hidden_size, config.word_embed_proj_dim, bias=False)
+                self.project_out = nn.Linear(config.hidden_size, config.word_embed_proj_dim, bias=False).to(
+                    "cuda:" + str(hf_device_map["model.project_out"]))
                 self.project_out.weight = OPTDecoder.project_out.weight
+                self.hf_device_map["model.project_out"] = hf_device_map["model.project_out"]
+                self.project_out.weight.requires_grad = False
             else:
                 raise NotImplementedError
         else:
@@ -815,14 +828,23 @@ class QSTOPTDecoder(OPTPreTrainedModel):
         if config.word_embed_proj_dim != config.hidden_size:
             # self.project_in = nn.Linear(config.word_embed_proj_dim, config.hidden_size, bias=False)
             if isinstance(OPTDecoder.project_in, bnb.nn.Linear8bitLt):
-                self.project_in = bnb.nn.Linear8bitLt(config.hidden_size, config.word_embed_proj_dim, bias=False)
+                self.project_in = bnb.nn.Linear8bitLt(config.hidden_size, config.word_embed_proj_dim, bias=False).to(
+                    "cuda:" + str(hf_device_map["model.project_in"]))
                 self.project_in.weight = OPTDecoder.project_in.weight
+                self.project_in.weight.requires_grad = False
+                self.hf_device_map["model.project_in"] = hf_device_map["model.project_in"]
             elif isinstance(OPTDecoder.project_in, bnb.nn.Linear4bit):
-                self.project_in = bnb.nn.Linear4bit(config.hidden_size, config.word_embed_proj_dim, bias=False)
+                self.project_in = bnb.nn.Linear4bit(config.hidden_size, config.word_embed_proj_dim, bias=False).to(
+                    "cuda:" + str(hf_device_map["model.project_in"]))
                 self.project_in.weight = OPTDecoder.project_in.weight
+                self.project_in.weight.requires_grad = False
+                self.hf_device_map["model.project_in"] = hf_device_map["model.project_in"]
             elif isinstance(OPTDecoder.project_in, nn.Linear):
-                self.project_in = nn.Linear(config.hidden_size, config.word_embed_proj_dim, bias=False)
+                self.project_in = nn.Linear(config.hidden_size, config.word_embed_proj_dim, bias=False).to(
+                    "cuda:" + str(hf_device_map["model.project_in"]))
                 self.project_in.weight = OPTDecoder.project_in.weight
+                self.project_in.weight.requires_grad = False
+                self.hf_device_map["model.project_in"] = hf_device_map["model.project_in"]
             else:
                 raise NotImplementedError
         else:
@@ -834,11 +856,15 @@ class QSTOPTDecoder(OPTPreTrainedModel):
         if config.do_layer_norm_before and not config._remove_final_layer_norm:
             self.final_layer_norm = nn.LayerNorm(
                 config.hidden_size, elementwise_affine=config.layer_norm_elementwise_affine
-            ).to(OPTDecoder.final_layer_norm.weight.device)
+            ).to("cuda:" + str(hf_device_map["model.final_layer_norm"]))
             self.final_layer_norm.weight = OPTDecoder.final_layer_norm.weight
+            self.final_layer_norm.weight.requires_grad = False
+            self.hf_device_map["model.final_layer_norm"] = hf_device_map["model.final_layer_norm"]
+
             self.final_layer_norm_qst = nn.LayerNorm(
                 int(config.hidden_size / QSTConfig.r), elementwise_affine=config.layer_norm_elementwise_affine
-            ).to(self.final_layer_norm.weight.device)
+            ).to("cuda:" + str(hf_device_map["model.final_layer_norm"]))
+            self.hf_device_map["model.final_layer_norm_qst"] = hf_device_map["model.final_layer_norm_qst"]
         else:
             self.final_layer_norm = None
             self.final_layer_norm_qst = None
@@ -850,6 +876,17 @@ class QSTOPTDecoder(OPTPreTrainedModel):
             [OPTDecoderLayer(config).to(self.blackbone[i].fc1.weight.device) for i in range(config.num_hidden_layers)])
 
         self.gradient_checkpointing = False
+
+        for i in range(config.num_hidden_layers):
+            gpu = "cuda:" + str(hf_device_map[f"model.layers.{i}"])
+            self.blackbone[i] = self.blackbone[i].to(gpu)
+            self.hf_device_map[f"model.blackbone.{i}"] = hf_device_map[f"model.layers.{i}"]
+            self.z[i] = self.z[i].to(gpu)
+            self.hf_device_map[f"model.z.{i}"] = hf_device_map[f"model.layers.{i}"]
+            self.qst_layers[i] = self.qst_layers[i].to(gpu)
+            self.hf_device_map[f"model.qst_layers.{i}"] = hf_device_map[f"model.layers.{i}"]
+            self.downsample[i] = self.downsample[i].to(gpu)
+            self.hf_device_map[f"model.downsample.{i}"] = hf_device_map[f"model.layers.{i}"]
         # Initialize weights and apply final processing
         # self.post_init()
 
@@ -1095,7 +1132,6 @@ class QSTOPTDecoder(OPTPreTrainedModel):
 
             qst_hidden_states = qst_layer_outputs[0]
 
-
             if use_cache:
                 next_decoder_cache += (layer_outputs[2 if output_attentions else 1],)
                 qst_next_decoder_cache += (qst_layer_outputs[2 if output_attentions else 1],)
@@ -1253,9 +1289,9 @@ class OPTModel(OPTPreTrainedModel):
     OPT_START_DOCSTRING,
 )
 class QSTOPTModel(OPTPreTrainedModel):
-    def __init__(self, OPTModel, config: OPTConfig, QSTConfig):
+    def __init__(self, OPTModel, config: OPTConfig, QSTConfig, hf_device_map):
         super().__init__(config)
-        self.decoder = QSTOPTDecoder(OPTModel.decoder, config, QSTConfig)
+        self.decoder = QSTOPTDecoder(OPTModel.decoder, config, QSTConfig, hf_device_map)
         # Initialize weights and apply final processing
         # self.post_init()
 
@@ -1323,7 +1359,6 @@ class QSTOPTModel(OPTPreTrainedModel):
 
     def load_qst_state(self, path):
         self.decoder.load_qst_state(path)
-
 
     def save_qst_state(self, path):
         self.decoder.save_qst_state(path)
@@ -1469,7 +1504,6 @@ class OPTForCausalLM(OPTPreTrainedModel):
 
         logits = self.lm_head(outputs[0]).contiguous()
 
-
         loss = None
         if labels is not None:
             # move labels to correct device to enable model parallelism
@@ -1525,19 +1559,30 @@ class OPTForCausalLM(OPTPreTrainedModel):
 class QSTOPTForCausalLM(OPTPreTrainedModel):
     _tied_weights_keys = ["lm_head.weight"]
 
-    def __init__(self, OPTForCausalLM, config, QSTConfig):
+    def __init__(self, llm: OPTForCausalLM, config, QSTConfig):
         super().__init__(config)
 
+        self.hidden_size = config.hidden_size
+        self.vocab_size = config.vocab_size
         self.qst_hidden_dim = int(config.hidden_size / QSTConfig.r)
-        self.model = QSTOPTModel(OPTForCausalLM.model, config, QSTConfig)
+
+        self.model = QSTOPTModel(llm.model, config, QSTConfig, llm.hf_device_map)
 
         # the lm_head weight is automatically tied to the embed tokens weight
-        self.lm_head_z = nn.Parameter(torch.zeros(config.config.hidden_size))
-        self.upsample = nn.Linear(self.qst_hidden_dim, config.word_embed_proj_dim)
-        self.lm_head = nn.Linear(config.word_embed_proj_dim, config.vocab_size, bias=False)
+        self.lm_head_z = nn.Parameter(torch.Tensor([1.0 for i in range(self.hidden_size)])).to(
+            llm.lm_head.weight.device)
+        self.upsample = nn.Linear(self.qst_hidden_dim, config.word_embed_proj_dim).to(
+            llm.lm_head.weight.device)
+        self.lm_head = nn.Linear(config.word_embed_proj_dim, config.vocab_size, bias=False).to(llm.lm_head.weight.device)
+        self.lm_head.weight = llm.lm_head.weight
+        self.lm_head.weight.requires_grad = False
         # self.lm_head.weight.requires_grad = False
 
-        del OPTForCausalLM
+        self.hf_device_map["lm_head"] = llm.hf_device_map["lm_head"]
+        self.hf_device_map["lm_head_z"] = llm.hf_device_map["lm_head"]
+        self.hf_device_map["upsample"] = llm.hf_device_map["lm_head"]
+
+        del llm
         # Initialize weights and apply final processing
         # self.post_init()
 
@@ -1676,7 +1721,7 @@ class QSTOPTForCausalLM(OPTPreTrainedModel):
         qst_hidden_states = self.upsample(qst_hidden_states)
         lm_head_z = torch.sigmoid(self.lm_head_z)
         final_hidden_states = lm_head_z * qst_hidden_states + (1 - lm_head_z) * hidden_states
-        
+
         # with torch.no_grad():
         logits = self.lm_head(final_hidden_states).contiguous()
 
@@ -1884,17 +1929,25 @@ class OPTForSequenceClassification(OPTPreTrainedModel):
 
 
 class QSTOPTForSequenceClassification(OPTPreTrainedModel):
-    def __init__(self, OPTForSequenceClassification, config: OPTConfig, QSTConfig):
+    def __init__(self, llm:OPTForSequenceClassification, config: OPTConfig, QSTConfig):
         super().__init__(config)
-        self.num_labels = OPTForSequenceClassification.num_labels
+        self.num_labels = llm.num_labels
+        self.hidden_size = config.hidden_size
         self.qst_hidden_dim = int(config.hidden_size / QSTConfig.r)
-        self.model = QSTOPTModel(OPTForSequenceClassification.model, config, QSTConfig)
 
-        self.lm_head_z = nn.Parameter(torch.zeros(config.config.hidden_size))
-        self.upsample = nn.Linear(self.qst_hidden_dim, config.word_embed_proj_dim)
-        self.score = nn.Linear(config.word_embed_proj_dim, self.num_labels, bias=False)
+        self.model = QSTOPTModel(OPTForSequenceClassification.model, config, QSTConfig,llm.hf_device_map)
 
-        del OPTForSequenceClassification
+        self.lm_head_z = nn.Parameter(torch.zeros(config.config.hidden_size)).to(llm.score.weight)
+        self.upsample = nn.Linear(self.qst_hidden_dim, config.word_embed_proj_dim).to(llm.score.weight)
+        self.score = nn.Linear(config.word_embed_proj_dim, self.num_labels, bias=False).to(llm.score.weight)
+        self.score.weight = llm.score.weight
+        self.score.weight.requires_grad = False
+
+        self.hf_device_map["upsample"] = llm.hf_device_map["lm_head"]
+        self.hf_device_map["score"] = llm.hf_device_map["lm_head"]
+        self.hf_device_map["lm_head_z"] = llm.hf_device_map["lm_head"]
+
+        del llm
 
         # Initialize weights and apply final processing
         # self.post_init()
@@ -1950,7 +2003,7 @@ class QSTOPTForSequenceClassification(OPTPreTrainedModel):
         qst_hidden_states = self.upsample(qst_hidden_states)
         lm_head_z = torch.sigmoid(self.lm_head_z)
         final_hidden_states = lm_head_z * qst_hidden_states + (1 - lm_head_z) * hidden_states
-        
+
         logits = self.score(final_hidden_states)
 
         if input_ids is not None:
