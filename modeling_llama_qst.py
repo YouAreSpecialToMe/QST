@@ -38,7 +38,7 @@ from transformers.utils import add_start_docstrings, add_start_docstrings_to_mod
 from transformers.models.llama.configuration_llama import LlamaConfig
 
 from QSTConfig import AdapterLinear
-from modeling_qst_output import QSTBaseModelOutputWithPast
+from modeling_qst_output import QSTBaseModelOutputWithPast,QSTCausalLMOutputWithPast
 
 logger = logging.get_logger(__name__)
 
@@ -187,6 +187,7 @@ def apply_rotary_pos_emb(q, k, cos, sin, position_ids):
     # The first two dimensions of cos and sin are always 1, so we can `squeeze` them.
     cos = cos.squeeze(1).squeeze(0)  # [seq_len, dim]
     sin = sin.squeeze(1).squeeze(0)  # [seq_len, dim]
+    position_ids = position_ids.to(cos.device)
     cos = cos[position_ids].unsqueeze(1)  # [bs, 1, seq_len, dim]
     sin = sin[position_ids].unsqueeze(1)  # [bs, 1, seq_len, dim]
     q_embed = (q * cos) + (rotate_half(q) * sin)
@@ -227,6 +228,10 @@ class LlamaMLP(nn.Module):
 
         return down_proj
 
+    def set_device(self, blackbone_mlp):
+        self.gate_proj = self.gate_proj.to(blackbone_mlp.gate_proj.weight.device)
+        self.up_proj = self.up_proj.to(blackbone_mlp.up_proj.weight.device)
+        self.down_proj = self.down_proj.to(blackbone_mlp.down_proj.weight.device)
 
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     """
@@ -362,7 +367,7 @@ class LlamaAttention(nn.Module):
                 raise ValueError(
                     f"Attention mask should be of size {(bsz, 1, q_len, kv_seq_len)}, but is {attention_mask.size()}"
                 )
-            attn_weights = attn_weights + attention_mask
+            attn_weights = attn_weights + attention_mask.to(attn_weights.device)
 
         # upcast attention to fp32
         attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
@@ -389,6 +394,11 @@ class LlamaAttention(nn.Module):
 
         return attn_output, attn_weights, past_key_value
 
+    def set_device(self, blackbone_att):
+        self.q_proj = self.q_proj.to(blackbone_att.q_proj.weight.device)
+        self.k_proj = self.k_proj.to(blackbone_att.k_proj.weight.device)
+        self.v_proj = self.v_proj.to(blackbone_att.v_proj.weight.device)
+        self.o_proj = self.o_proj.to(blackbone_att.o_proj.weight.device)
 
 class LlamaDecoderLayer(nn.Module):
     def __init__(self, config: LlamaConfig):
@@ -453,6 +463,12 @@ class LlamaDecoderLayer(nn.Module):
 
         return outputs
 
+    def set_device(self, blackbone_layer):
+        self.self_attn.set_device(blackbone_layer.self_attn)
+        self.mlp.set_device(blackbone_layer.mlp)
+        self.input_layernorm = self.input_layernorm.to(blackbone_layer.input_layernorm.weight.device)
+        self.post_attention_layernorm = self.post_attention_layernorm.to(
+            blackbone_layer.post_attention_layernorm.weight.device)
 
 LLAMA_START_DOCSTRING = r"""
     This model inherits from [`PreTrainedModel`]. Check the superclass documentation for the generic methods the
@@ -745,6 +761,7 @@ class LlamaModel(LlamaPreTrainedModel):
         )
 
 
+# QSTLlamaModel
 class QSTLlamaModel(LlamaPreTrainedModel):
     """
     Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`LlamaDecoderLayer`]
@@ -753,14 +770,20 @@ class QSTLlamaModel(LlamaPreTrainedModel):
         config: LlamaConfig
     """
 
-    def __init__(self, llm: LlamaModel, config: LlamaConfig, QSTConfig):
+    def __init__(self, llm: LlamaModel, config: LlamaConfig, QSTConfig, hf_device_map):
+        # config
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
+        self.hf_device_map = {}
+        # self.config = llm.config
 
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.embed_tokens.weight = llm.embed_tokens.weight
         self.embed_tokens.weight.requires_grad = False
+        self.embed_tokens = self.embed_tokens.to(("cuda:" + str(hf_device_map["model.embed_tokens"])))
+        self.hf_device_map["model.embed_tokens"] = hf_device_map["model.embed_tokens"]
+
 
         self.blackbone = llm.layers
         self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
@@ -769,28 +792,46 @@ class QSTLlamaModel(LlamaPreTrainedModel):
 
         self.gradient_checkpointing = False
 
+
         self.downsample = nn.ModuleList([AdapterLinear(in_features=config.hidden_size,
                                                        out_features=int(config.hidden_size / QSTConfig.r),
                                                        r=int(QSTConfig.peft_hidden_size),
                                                        alpha_r=int(QSTConfig.peft_hidden_size),
                                                        activation=QSTConfig.activation,
-                                                       # num_expert=QSTConfig.num_expert,
-                                                       # routing_strategy=QSTConfig.routing_strategy,
-                                                       # weight_average=QSTConfig.weight_average,
+
                                                        add_layer_norm_after_adapter=QSTConfig.add_layer_norm_after_adapter,
                                                        add_layer_norm_before_adapter=QSTConfig.add_layer_norm_before_adapter,
-                                                       dropout=QSTConfig.dropout).to(self.blackbone[i].mlp.gate_proj.weight.device)
+                                                       dropout=QSTConfig.dropout)
                                          for i in range(config.num_hidden_layers)])
 
-        self.z = nn.ParameterList(
-            [nn.Parameter(torch.tensor([0.5])).to(self.blackbone[i].mlp.gate_proj.weight.device) for i in
-             range(config.num_hidden_layers)])
+
 
         config.hidden_size = int(config.hidden_size / QSTConfig.r)
-        config.intermediate_size = int(config.hidden_size / QSTConfig.r)
-        self.qst_layers = nn.ModuleList([LlamaDecoderLayer(config).to(self.blackbone[i].mlp.gate_proj.weight.device) for i in range(config.num_hidden_layers)])
-        self.norm_qst = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        config.intermediate_size = int(config.intermediate_size / QSTConfig.r)
 
+        self.z = nn.ParameterList(
+            [nn.Parameter(torch.Tensor([1.0 for i in range(config.hidden_size)])) for i in
+             range(config.num_hidden_layers)])
+
+        # .to(self.blackbone[i].post_attention_layernorm.weight.device)
+        self.qst_layers = nn.ModuleList([LlamaDecoderLayer(config) for i in range(config.num_hidden_layers)])
+
+        # .to(self.norm.weight.device)
+        self.norm_qst = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm_qst = self.norm_qst.to(("cuda:" + str(hf_device_map["model.norm"])))
+        self.hf_device_map["model.norm_qst"] = hf_device_map["model.norm"]
+        self.hf_device_map["model.norm"] = hf_device_map["model.norm"]
+
+        for i in range(config.num_hidden_layers):
+            gpu = "cuda:" + str(hf_device_map[f"model.layers.{i}"])
+            self.blackbone[i] = self.blackbone[i].to(gpu)
+            self.hf_device_map[f"model.blackbone.{i}"] = hf_device_map[f"model.layers.{i}"]
+            self.z[i] = self.z[i].to(gpu)
+            self.hf_device_map[f"model.z.{i}"] = hf_device_map[f"model.layers.{i}"]
+            self.qst_layers[i] = self.qst_layers[i].to(gpu)
+            self.hf_device_map[f"model.qst_layers.{i}"] = hf_device_map[f"model.layers.{i}"]
+            self.downsample[i] = self.downsample[i].to(gpu)
+            self.hf_device_map[f"model.downsample.{i}"] = hf_device_map[f"model.layers.{i}"]
         # Initialize weights and apply final processing
         # self.post_init()
 
@@ -874,6 +915,7 @@ class QSTLlamaModel(LlamaPreTrainedModel):
 
         with torch.no_grad():
             if inputs_embeds is None:
+                input_ids = input_ids.to(self.embed_tokens.weight.device)
                 inputs_embeds = self.embed_tokens(input_ids)
         # embed positions
         if attention_mask is None:
@@ -952,6 +994,7 @@ class QSTLlamaModel(LlamaPreTrainedModel):
                 )
             else:
                 with torch.no_grad():
+                    # hidden_states = hidden_states.to(decoder_layer.input_layernorm.weight.device)
                     layer_outputs = decoder_layer(
                         hidden_states,
                         attention_mask=attention_mask,
@@ -962,8 +1005,11 @@ class QSTLlamaModel(LlamaPreTrainedModel):
                     )
 
                 hidden_states = layer_outputs[0]
+
                 z = torch.sigmoid(self.z[idx])
-                qst_hidden_states = (1 - z) * self.downsample[idx](hidden_states) + z * qst_hidden_states
+
+                qst_hidden_states = qst_hidden_states.to(hidden_states.device)
+                qst_hidden_states = (1 - z) * self.downsample[idx](hidden_states) + z * (qst_hidden_states)
 
                 qst_layer_outputs = self.qst_layers[idx](
                     qst_hidden_states,
@@ -975,6 +1021,7 @@ class QSTLlamaModel(LlamaPreTrainedModel):
                 )
 
             qst_hidden_states = qst_layer_outputs[0]
+            # hidden_states = layer_outputs[0]
 
             if use_cache:
                 next_decoder_cache += (layer_outputs[2 if output_attentions else 1],)
@@ -1220,12 +1267,19 @@ class QSTLlamaForCausalLM(LlamaPreTrainedModel):
         super().__init__(config)
         self.hidden_size = config.hidden_size
         self.vocab_size = config.vocab_size
-        self.model = QSTLlamaModel(llm.model, config, qstconfig)
+        self.model = QSTLlamaModel(llm.model, config, qstconfig,llm.hf_device_map)
+        self.hf_device_map = self.model.hf_device_map
 
-        self.lm_head = nn.Linear(self.hidden_size, config.vocab_size, bias=False)
-        self.lm_head_z = nn.Parameter(torch.zeros(self.hidden_size))
+        self.lm_head_z = nn.Parameter(torch.Tensor([1.0 for i in range(self.hidden_size)])).to(llm.lm_head.weight.device)
+        self.lm_head = nn.Linear(self.hidden_size, self.vocab_size, bias=False).to(llm.lm_head.weight.device)
+        self.lm_head.weight = llm.lm_head.weight
+        self.lm_head.weight.requires_grad = False
 
-        self.upsample = nn.Linear(int(self.hidden_size / qstconfig.r), self.hidden_size)
+        self.hf_device_map["lm_head"] = llm.hf_device_map["lm_head"]
+        self.hf_device_map["lm_head_z"] = llm.hf_device_map["lm_head"]
+
+        self.upsample = nn.Linear(int(self.hidden_size / qstconfig.r), self.hidden_size).to(llm.lm_head.weight.device)
+        self.hf_device_map["upsample"] = llm.hf_device_map["lm_head"]
 
         del llm
 
@@ -1258,6 +1312,7 @@ class QSTLlamaForCausalLM(LlamaPreTrainedModel):
             attention_mask: Optional[torch.Tensor] = None,
             position_ids: Optional[torch.LongTensor] = None,
             past_key_values: Optional[List[torch.FloatTensor]] = None,
+            qst_past_key_values: Optional[List[torch.FloatTensor]] = None,
             inputs_embeds: Optional[torch.FloatTensor] = None,
             labels: Optional[torch.LongTensor] = None,
             use_cache: Optional[bool] = None,
@@ -1303,6 +1358,7 @@ class QSTLlamaForCausalLM(LlamaPreTrainedModel):
             attention_mask=attention_mask,
             position_ids=position_ids,
             past_key_values=past_key_values,
+            qst_past_key_values=qst_past_key_values,
             inputs_embeds=inputs_embeds,
             use_cache=use_cache,
             output_attentions=output_attentions,
@@ -1318,18 +1374,17 @@ class QSTLlamaForCausalLM(LlamaPreTrainedModel):
             qst_hidden_states = outputs.last_qst_hidden_states
 
         # hidden_states = outputs[0]
-        qst_hidden_states = self.upsample(qst_hidden_states)
         lm_head_z = torch.sigmoid(self.lm_head_z)
-        final_hidden_states = lm_head_z * qst_hidden_states + (1 - lm_head_z) * hidden_states
-        
+        qst_hidden_states = (1 - lm_head_z) * self.upsample(qst_hidden_states) + lm_head_z * hidden_states
         # logits = self.score(qst_hidden_states)
+
 
         if self.config.pretraining_tp > 1:
             lm_head_slices = self.lm_head.weight.split(self.vocab_size // self.config.pretraining_tp, dim=0)
-            logits = [F.linear(final_hidden_states, lm_head_slices[i]) for i in range(self.config.pretraining_tp)]
+            logits = [F.linear(qst_hidden_states, lm_head_slices[i]) for i in range(self.config.pretraining_tp)]
             logits = torch.cat(logits, dim=-1)
         else:
-            logits = self.lm_head(final_hidden_states)
+            logits = self.lm_head(qst_hidden_states)
         logits = logits.float()
 
         loss = None
@@ -1339,26 +1394,29 @@ class QSTLlamaForCausalLM(LlamaPreTrainedModel):
             shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
             loss_fct = CrossEntropyLoss()
-            shift_logits = shift_logits.view(-1, self.config.vocab_size)
+            shift_logits = shift_logits.view(-1, self.vocab_size+1)
             shift_labels = shift_labels.view(-1)
             # Enable model parallelism
             shift_labels = shift_labels.to(shift_logits.device)
-            loss = loss_fct(shift_logits, shift_labels)
+            loss = loss_fct(shift_logits, shift_labels).to("cuda:0")
 
         if not return_dict:
             output = (logits,) + outputs[1:]
             return (loss,) + output if loss is not None else output
 
-        return CausalLMOutputWithPast(
+        return QSTCausalLMOutputWithPast(
             loss=loss,
             logits=logits,
             past_key_values=outputs.past_key_values,
+            qst_past_key_values=outputs.qst_past_key_values,
             hidden_states=outputs.hidden_states,
+            qst_hidden_states=outputs.qst_hidden_states,
+            qst_attentions=outputs.qst_attentions,
             attentions=outputs.attentions,
         )
 
     def prepare_inputs_for_generation(
-            self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
+            self, input_ids, past_key_values=None,qst_past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
     ):
         if past_key_values:
             input_ids = input_ids[:, -1:]
@@ -1380,6 +1438,7 @@ class QSTLlamaForCausalLM(LlamaPreTrainedModel):
         model_inputs.update(
             {
                 "position_ids": position_ids,
+                "qst_past_key_values": qst_past_key_values,
                 "past_key_values": past_key_values,
                 "use_cache": kwargs.get("use_cache"),
                 "attention_mask": attention_mask,
@@ -1404,9 +1463,8 @@ class QSTLlamaForCausalLM(LlamaPreTrainedModel):
         qst_upsample_parameters = torch.load(qst_upsample_path)
         self.upsample.load_state_dict(qst_upsample_parameters)
 
-        lm_head_z_path = os.path.join(path, "lm_head_z_parameters.pt")
-        lm_head_z = torch.load(lm_head_z_path)
-        self.lm_head_z = lm_head_z
+        lm_head_z_path = os.path.join(path, "lm_head_z_path.pt")
+        self.lm_head_z= torch.load(lm_head_z_path)
 
     def save_qst_state(self, path):
 
@@ -1415,9 +1473,8 @@ class QSTLlamaForCausalLM(LlamaPreTrainedModel):
         qst_upsample_path = os.path.join(path, "qst_upsample_parameters.pt")
         torch.save(self.upsample.state_dict(), qst_upsample_path)
 
-        lm_head_z_path = os.path.join(path, "lm_head_z_parameters.pt")
+        lm_head_z_path = os.path.join(path, "lm_head_z_path.pt")
         torch.save(self.lm_head_z, lm_head_z_path)
-
 
 @add_start_docstrings(
     """
@@ -1540,6 +1597,7 @@ class LlamaForSequenceClassification(LlamaPreTrainedModel):
             attentions=transformer_outputs.attentions,
         )
 
+
 class QSTLlamaForSequenceClassification(LlamaPreTrainedModel):
     def __init__(self, llm: LlamaForSequenceClassification, config: LlamaConfig, qstconfig):
         super().__init__(config)
@@ -1549,10 +1607,18 @@ class QSTLlamaForSequenceClassification(LlamaPreTrainedModel):
 
         self.upsample = nn.Linear(int(self.hidden_size / qstconfig.r), self.hidden_size).to(
             llm.model.device)
-        self.lm_head_z = nn.Parameter(torch.zeros(self.hidden_size))
-        self.score = nn.Linear(self.hidden_size, self.num_labels, bias=False)
+
+
+        self.score = nn.Linear(self.hidden_size, self.num_labels, bias=False).to(llm.score.weight)
+        self.score.weight = llm.score.weight
+        self.score.weight.requires_grad = False
         self.config = llm.config
 
+        self.upsample = nn.Linear(int(self.hidden_size / qstconfig.r), self.hidden_size).to(llm.lm_head.weight.device)
+
+        self.hf_device_map["upsample"] = llm.hf_device_map["lm_head"]
+        self.hf_device_map["score"] = llm.hf_device_map["lm_head"]
+        self.hf_device_map["lm_head_z"] = llm.hf_device_map["lm_head"]
         # Initialize weights and apply final processing
         # self.post_init()
 
@@ -1604,9 +1670,8 @@ class QSTLlamaForSequenceClassification(LlamaPreTrainedModel):
             qst_hidden_states = transformer_outputs.last_qst_hidden_states
 
         qst_hidden_states = self.upsample(qst_hidden_states)
-        lm_head_z = torch.sigmoid(self.lm_head_z)
-        final_hidden_states = lm_head_z * qst_hidden_states + (1 - lm_head_z) * hidden_states
-        logits = self.score(final_hidden_states)
+        qst_hidden_states = (1 - self.lm_head_z) * self.upsample(qst_hidden_states) + self.lm_head_z * hidden_states
+        logits = self.score(qst_hidden_states)
 
         if input_ids is not None:
             batch_size = input_ids.shape[0]
@@ -1670,9 +1735,8 @@ class QSTLlamaForSequenceClassification(LlamaPreTrainedModel):
         qst_upsample_parameters = torch.load(qst_upsample_path)
         self.upsample.load_state_dict(qst_upsample_parameters)
 
-        lm_head_z_path = os.path.join(path, "lm_head_z_parameters.pt")
-        lm_head_z = torch.load(lm_head_z_path)
-        self.lm_head_z = lm_head_z
+        score_z_path = os.path.join(path, "score_z_path.pt")
+        self.score_z= torch.load(score_z_path)
 
     def save_qst_state(self, path):
 
@@ -1681,5 +1745,5 @@ class QSTLlamaForSequenceClassification(LlamaPreTrainedModel):
         qst_upsample_path = os.path.join(path, "qst_upsample_parameters.pt")
         torch.save(self.upsample.state_dict(), qst_upsample_path)
 
-        lm_head_z_path = os.path.join(path, "lm_head_z_parameters.pt")
-        torch.save(self.lm_head_z, lm_head_z_path)
+        score_z_path = os.path.join(path, "score_z_path.pt")
+        torch.save(score_z_path)
