@@ -38,7 +38,7 @@ from transformers.utils import add_start_docstrings, add_start_docstrings_to_mod
 from transformers.models.llama.configuration_llama import LlamaConfig
 
 from QSTConfig import AdapterLinear
-from modeling_qst_output import QSTBaseModelOutputWithPast,QSTCausalLMOutputWithPast
+from modeling_qst_output import QSTBaseModelOutputWithPast, QSTCausalLMOutputWithPast
 
 logger = logging.get_logger(__name__)
 
@@ -233,6 +233,7 @@ class LlamaMLP(nn.Module):
         self.up_proj = self.up_proj.to(blackbone_mlp.up_proj.weight.device)
         self.down_proj = self.down_proj.to(blackbone_mlp.down_proj.weight.device)
 
+
 def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     """
     This is the equivalent of torch.repeat_interleave(x, dim=1, repeats=n_rep). The hidden states go from (batch,
@@ -400,6 +401,7 @@ class LlamaAttention(nn.Module):
         self.v_proj = self.v_proj.to(blackbone_att.v_proj.weight.device)
         self.o_proj = self.o_proj.to(blackbone_att.o_proj.weight.device)
 
+
 class LlamaDecoderLayer(nn.Module):
     def __init__(self, config: LlamaConfig):
         super().__init__()
@@ -469,6 +471,7 @@ class LlamaDecoderLayer(nn.Module):
         self.input_layernorm = self.input_layernorm.to(blackbone_layer.input_layernorm.weight.device)
         self.post_attention_layernorm = self.post_attention_layernorm.to(
             blackbone_layer.post_attention_layernorm.weight.device)
+
 
 LLAMA_START_DOCSTRING = r"""
     This model inherits from [`PreTrainedModel`]. Check the superclass documentation for the generic methods the
@@ -775,6 +778,7 @@ class QSTLlamaModel(LlamaPreTrainedModel):
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
+
         self.hf_device_map = {}
         # self.config = llm.config
 
@@ -784,14 +788,12 @@ class QSTLlamaModel(LlamaPreTrainedModel):
         self.embed_tokens = self.embed_tokens.to(("cuda:" + str(hf_device_map["model.embed_tokens"])))
         self.hf_device_map["model.embed_tokens"] = hf_device_map["model.embed_tokens"]
 
-
         self.blackbone = llm.layers
         self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.norm.weight = llm.norm.weight
         self.norm.weight.requires_grad = False
 
         self.gradient_checkpointing = False
-
 
         self.downsample = nn.ModuleList([AdapterLinear(in_features=config.hidden_size,
                                                        out_features=int(config.hidden_size / QSTConfig.r),
@@ -803,8 +805,6 @@ class QSTLlamaModel(LlamaPreTrainedModel):
                                                        add_layer_norm_before_adapter=QSTConfig.add_layer_norm_before_adapter,
                                                        dropout=QSTConfig.dropout)
                                          for i in range(config.num_hidden_layers)])
-
-
 
         config.hidden_size = int(config.hidden_size / QSTConfig.r)
         config.intermediate_size = int(config.intermediate_size / QSTConfig.r)
@@ -1096,6 +1096,7 @@ class QSTLlamaModel(LlamaPreTrainedModel):
         qst_norm_path = os.path.join(path, "qst_norm_parameters.pt")
         torch.save(self.norm_qst.state_dict(), qst_norm_path)
 
+
 class LlamaForCausalLM(LlamaPreTrainedModel):
     _tied_weights_keys = ["lm_head.weight"]
 
@@ -1267,10 +1268,11 @@ class QSTLlamaForCausalLM(LlamaPreTrainedModel):
         super().__init__(config)
         self.hidden_size = config.hidden_size
         self.vocab_size = config.vocab_size
-        self.model = QSTLlamaModel(llm.model, config, qstconfig,llm.hf_device_map)
+        self.model = QSTLlamaModel(llm.model, config, qstconfig, llm.hf_device_map)
         self.hf_device_map = self.model.hf_device_map
 
-        self.lm_head_z = nn.Parameter(torch.Tensor([1.0 for i in range(self.hidden_size)])).to(llm.lm_head.weight.device)
+        self.lm_head_z = nn.Parameter(torch.Tensor([1.0 for i in range(self.hidden_size)])).to(
+            llm.lm_head.weight.device)
         self.lm_head = nn.Linear(self.hidden_size, self.vocab_size, bias=False).to(llm.lm_head.weight.device)
         self.lm_head.weight = llm.lm_head.weight
         self.lm_head.weight.requires_grad = False
@@ -1378,7 +1380,6 @@ class QSTLlamaForCausalLM(LlamaPreTrainedModel):
         qst_hidden_states = (1 - lm_head_z) * self.upsample(qst_hidden_states) + lm_head_z * hidden_states
         # logits = self.score(qst_hidden_states)
 
-
         if self.config.pretraining_tp > 1:
             lm_head_slices = self.lm_head.weight.split(self.vocab_size // self.config.pretraining_tp, dim=0)
             logits = [F.linear(qst_hidden_states, lm_head_slices[i]) for i in range(self.config.pretraining_tp)]
@@ -1394,7 +1395,7 @@ class QSTLlamaForCausalLM(LlamaPreTrainedModel):
             shift_labels = labels[..., 1:].contiguous()
             # Flatten the tokens
             loss_fct = CrossEntropyLoss()
-            shift_logits = shift_logits.view(-1, self.vocab_size+1)
+            shift_logits = shift_logits.view(-1, self.vocab_size + 1)
             shift_labels = shift_labels.view(-1)
             # Enable model parallelism
             shift_labels = shift_labels.to(shift_logits.device)
@@ -1416,7 +1417,8 @@ class QSTLlamaForCausalLM(LlamaPreTrainedModel):
         )
 
     def prepare_inputs_for_generation(
-            self, input_ids, past_key_values=None,qst_past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
+            self, input_ids, past_key_values=None, qst_past_key_values=None, attention_mask=None, inputs_embeds=None,
+            **kwargs
     ):
         if past_key_values:
             input_ids = input_ids[:, -1:]
@@ -1464,7 +1466,7 @@ class QSTLlamaForCausalLM(LlamaPreTrainedModel):
         self.upsample.load_state_dict(qst_upsample_parameters)
 
         lm_head_z_path = os.path.join(path, "lm_head_z_path.pt")
-        self.lm_head_z= torch.load(lm_head_z_path)
+        self.lm_head_z = torch.load(lm_head_z_path)
 
     def save_qst_state(self, path):
 
@@ -1475,6 +1477,7 @@ class QSTLlamaForCausalLM(LlamaPreTrainedModel):
 
         lm_head_z_path = os.path.join(path, "lm_head_z_path.pt")
         torch.save(self.lm_head_z, lm_head_z_path)
+
 
 @add_start_docstrings(
     """
@@ -1608,7 +1611,6 @@ class QSTLlamaForSequenceClassification(LlamaPreTrainedModel):
         self.upsample = nn.Linear(int(self.hidden_size / qstconfig.r), self.hidden_size).to(
             llm.model.device)
 
-
         self.score = nn.Linear(self.hidden_size, self.num_labels, bias=False).to(llm.score.weight)
         self.score.weight = llm.score.weight
         self.score.weight.requires_grad = False
@@ -1616,9 +1618,9 @@ class QSTLlamaForSequenceClassification(LlamaPreTrainedModel):
 
         self.upsample = nn.Linear(int(self.hidden_size / qstconfig.r), self.hidden_size).to(llm.lm_head.weight.device)
 
-        self.hf_device_map["upsample"] = llm.hf_device_map["lm_head"]
-        self.hf_device_map["score"] = llm.hf_device_map["lm_head"]
-        self.hf_device_map["lm_head_z"] = llm.hf_device_map["lm_head"]
+        self.hf_device_map["upsample"] = llm.hf_device_map["score"]
+        self.hf_device_map["score"] = llm.hf_device_map["score"]
+        self.hf_device_map["lm_head_z"] = llm.hf_device_map["score"]
         # Initialize weights and apply final processing
         # self.post_init()
 
@@ -1736,7 +1738,7 @@ class QSTLlamaForSequenceClassification(LlamaPreTrainedModel):
         self.upsample.load_state_dict(qst_upsample_parameters)
 
         score_z_path = os.path.join(path, "score_z_path.pt")
-        self.score_z= torch.load(score_z_path)
+        self.score_z = torch.load(score_z_path)
 
     def save_qst_state(self, path):
 
