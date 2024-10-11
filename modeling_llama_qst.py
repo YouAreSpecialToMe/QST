@@ -777,42 +777,46 @@ class QSTLlamaModel(LlamaPreTrainedModel):
     """
 
     def __init__(self, llm: LlamaModel, config: LlamaConfig, QSTConfig, hf_device_map):
-        # config
+        # Initialize the superclass
         super().__init__(config)
         self.padding_idx = config.pad_token_id
         self.vocab_size = config.vocab_size
 
         self.hf_device_map = {}
 
-        # set the default device
-        default_device = next(llm.parameters()).device
+        # Set the default device (attempt to get from llm parameters)
+        try:
+            default_device = next(llm.parameters()).device
+        except StopIteration:
+            # If llm has no parameters, default to CPU
+            default_device = torch.device('cpu')
 
-        # initialize the embed_tokens module
+        # Initialize the embed_tokens module
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.embed_tokens.weight = llm.embed_tokens.weight
         self.embed_tokens.weight.requires_grad = False
 
-        # set the embed_tokens device
+        # Set the embed_tokens device
         embed_tokens_device = self.get_device(hf_device_map, "model.embed_tokens", default_device)
         self.embed_tokens = self.embed_tokens.to(embed_tokens_device)
         self.hf_device_map["model.embed_tokens"] = self.get_device_index(hf_device_map, "model.embed_tokens")
 
-        # set the backbone to the original llm.layers
+        # Set the backbone to the original llm.layers
         self.backbone = llm.layers
 
-        # initialize the norm module
+        # Initialize the norm module
         self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.norm.weight = llm.norm.weight
         self.norm.weight.requires_grad = False
 
-        # set the norm device
+        # Set the norm device
         norm_device = self.get_device(hf_device_map, "model.norm", default_device)
         self.norm = self.norm.to(norm_device)
         self.hf_device_map["model.norm"] = self.get_device_index(hf_device_map, "model.norm")
 
         self.gradient_checkpointing = False
 
-        # initialize the downsample module
+        # Initialize the downsample module
         self.downsample = nn.ModuleList([
             AdapterLinear(
                 in_features=config.hidden_size,
@@ -830,71 +834,91 @@ class QSTLlamaModel(LlamaPreTrainedModel):
         config.hidden_size = int(config.hidden_size / QSTConfig.r)
         config.intermediate_size = int(config.intermediate_size / QSTConfig.r)
 
-        # initialize the parameter z
+        # Initialize the parameter z
         self.z = nn.ParameterList([
             nn.Parameter(torch.ones(config.hidden_size))
             for _ in range(config.num_hidden_layers)
         ])
 
-        #  initialize the qst_layers module
+        # Initialize the qst_layers module
         self.qst_layers = nn.ModuleList([
             LlamaDecoderLayer(config)
             for _ in range(config.num_hidden_layers)
         ])
 
-        # initialize the norm_qst module
+        # Initialize the norm_qst module
         self.norm_qst = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        norm_qst_device = self.get_device(hf_device_map, "model.norm", default_device)
+        norm_qst_device = self.get_device(hf_device_map, "model.norm_qst", norm_device)
         self.norm_qst = self.norm_qst.to(norm_qst_device)
-        self.hf_device_map["model.norm_qst"] = self.get_device_index(hf_device_map, "model.norm")
+        self.hf_device_map["model.norm_qst"] = self.get_device_index(hf_device_map, "model.norm_qst")
 
-        # set up the device for parallel
+        # Set up the device for each layer
         for i in range(config.num_hidden_layers):
             layer_key = f"model.layers.{i}"
             layer_device = self.get_device(hf_device_map, layer_key, default_device)
             layer_device_index = self.get_device_index(hf_device_map, layer_key)
 
+            # Move backbone layer to the appropriate device
             self.backbone[i] = self.backbone[i].to(layer_device)
             self.hf_device_map[f"model.backbone.{i}"] = layer_device_index
 
+            # Move z parameter to the appropriate device
             self.z[i] = self.z[i].to(layer_device)
             self.hf_device_map[f"model.z.{i}"] = layer_device_index
 
+            # Move qst_layer to the appropriate device
             self.qst_layers[i] = self.qst_layers[i].to(layer_device)
             self.hf_device_map[f"model.qst_layers.{i}"] = layer_device_index
 
+            # Move downsample to the appropriate device
             self.downsample[i] = self.downsample[i].to(layer_device)
             self.hf_device_map[f"model.downsample.{i}"] = layer_device_index
 
+
     def get_device(self, hf_device_map, key, default_device):
         """
-        Get the device according to hf_device_map.
-        If key exists in hf_device_map, return the corresponding device.
-        If hf_device_map is {'': device_index}, return the device.
+        Get the device for a module based on hf_device_map and default_device.
+        If the key exists in hf_device_map, return the corresponding device.
+        If hf_device_map is {'': device_index}, return that device.
         Otherwise, return default_device.
         """
         if key in hf_device_map:
             device_index = hf_device_map[key]
-            return torch.device(f"cuda:{device_index}")
         elif '' in hf_device_map:
             device_index = hf_device_map['']
-            return torch.device(f"cuda:{device_index}")
         else:
+            # If neither key nor default key is in hf_device_map, return default_device
             return default_device
+
+        # Handle different types of device specifications
+        if isinstance(device_index, int) or (isinstance(device_index, str) and device_index.isdigit()):
+            # Device index is an integer or string digit (e.g., '0')
+            device = torch.device(f"cuda:{device_index}")
+        elif isinstance(device_index, str) and device_index.lower() == 'cpu':
+            # Device is specified as 'cpu'
+            device = torch.device('cpu')
+        elif isinstance(device_index, str) and device_index.startswith('cuda'):
+            # Device is specified as 'cuda:x'
+            device = torch.device(device_index)
+        else:
+            # Default to default_device if device specification is unrecognized
+            device = default_device
+
+        return device
 
     def get_device_index(self, hf_device_map, key):
         """
-        Get the device index according to hf_device_map.
+        Get the device index from hf_device_map for a given key.
         """
         if key in hf_device_map:
-            return hf_device_map[key]
+            device_index = hf_device_map[key]
         elif '' in hf_device_map:
-            return hf_device_map['']
+            device_index = hf_device_map['']
         else:
-            return 0
+            # Default to 'cpu'
+            device_index = 'cpu'
 
-    # Initialize weights and apply final processing
-    # self.post_init()
+        return device_index
 
     def get_input_embeddings(self):
         return self.embed_tokens
@@ -1672,7 +1696,7 @@ class QSTLlamaForSequenceClassification(LlamaPreTrainedModel):
         self.hidden_size = config.hidden_size
         self.config = llm.config
 
-        self.model = QSTLlamaModel(llm.model, config, qstconfig,llm.hf_device_map)
+        self.model = QSTLlamaModel(llm.model, config, qstconfig, llm.hf_device_map)
 
         self.score = nn.Linear(self.hidden_size, self.num_labels, bias=False).to(llm.score.weight.device)
         self.score.weight = llm.score.weight
