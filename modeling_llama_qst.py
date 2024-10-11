@@ -1366,8 +1366,8 @@ class QSTLlamaForCausalLM(LlamaPreTrainedModel):
 
         if str(llm.lm_head.weight.device) == 'cpu':
             self.hf_device_map["lm_head"] = 'cpu'
-            self.hf_device_map["lm_head"] = 'cpu'
-            self.hf_device_map["lm_head"] = 'cpu'
+            self.hf_device_map["lm_head_z"] = 'cpu'
+            self.hf_device_map["upsample"] = 'cpu'
         else:
             self.hf_device_map["lm_head"] = "cuda:" + str(llm.lm_head.weight.device)
             self.hf_device_map["lm_head_z"] = "cuda:" + str(llm.lm_head.weight.device)
@@ -1713,11 +1713,11 @@ class QSTLlamaForSequenceClassification(LlamaPreTrainedModel):
             llm.score.weight.device)
 
         if str(llm.lm_head.weight.device) == 'cpu':
-            self.hf_device_map["lm_head"] = 'cpu'
-            self.hf_device_map["lm_head"] = 'cpu'
-            self.hf_device_map["lm_head"] = 'cpu'
+            self.hf_device_map["score"] = 'cpu'
+            self.hf_device_map["lm_head_z"] = 'cpu'
+            self.hf_device_map["upsample"] = 'cpu'
         else:
-            self.hf_device_map["lm_head"] = "cuda:" + str(llm.lm_head.weight.device)
+            self.hf_device_map["score"] = "cuda:" + str(llm.lm_head.weight.device)
             self.hf_device_map["lm_head_z"] = "cuda:" + str(llm.lm_head.weight.device)
             self.hf_device_map["upsample"] = "cuda:" + str(llm.lm_head.weight.device)
 
