@@ -1362,11 +1362,16 @@ class QSTLlamaForCausalLM(LlamaPreTrainedModel):
         self.lm_head.weight = llm.lm_head.weight
         self.lm_head.weight.requires_grad = False
 
-        self.hf_device_map["lm_head"] = "cuda:" + str(llm.lm_head.weight.device)
-        self.hf_device_map["lm_head_z"] = "cuda:" + str(llm.lm_head.weight.device)
-
         self.upsample = nn.Linear(int(self.hidden_size / qstconfig.r), self.hidden_size).to(llm.lm_head.weight.device)
-        self.hf_device_map["upsample"] = "cuda:" + str(llm.lm_head.weight.device)
+
+        if str(llm.lm_head.weight.device) == 'cpu':
+            self.hf_device_map["lm_head"] = 'cpu'
+            self.hf_device_map["lm_head"] = 'cpu'
+            self.hf_device_map["lm_head"] = 'cpu'
+        else:
+            self.hf_device_map["lm_head"] = "cuda:" + str(llm.lm_head.weight.device)
+            self.hf_device_map["lm_head_z"] = "cuda:" + str(llm.lm_head.weight.device)
+            self.hf_device_map["upsample"] = "cuda:" + str(llm.lm_head.weight.device)
 
         if llm.hf_device_map == {'': 0}:
             self.hf_device_map = {'': 0}
@@ -1707,9 +1712,14 @@ class QSTLlamaForSequenceClassification(LlamaPreTrainedModel):
         self.lm_head_z = nn.Parameter(torch.Tensor([1.0 for i in range(self.hidden_size)])).to(
             llm.score.weight.device)
 
-        self.hf_device_map["upsample"] = "cuda:" + str(llm.score.weight.device)
-        self.hf_device_map["score"] = "cuda:" + str(llm.score.weight.device)
-        self.hf_device_map["lm_head_z"] = "cuda:" + str(llm.score.weight.device)
+        if str(llm.lm_head.weight.device) == 'cpu':
+            self.hf_device_map["lm_head"] = 'cpu'
+            self.hf_device_map["lm_head"] = 'cpu'
+            self.hf_device_map["lm_head"] = 'cpu'
+        else:
+            self.hf_device_map["lm_head"] = "cuda:" + str(llm.lm_head.weight.device)
+            self.hf_device_map["lm_head_z"] = "cuda:" + str(llm.lm_head.weight.device)
+            self.hf_device_map["upsample"] = "cuda:" + str(llm.lm_head.weight.device)
 
         if llm.hf_device_map == {'': 0}:
             self.hf_device_map = {'': 0}
