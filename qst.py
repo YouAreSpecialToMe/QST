@@ -3,10 +3,12 @@
 
 from collections import defaultdict
 import os
+from huggingface_hub import login
+
+# login(os.getenv("HF_TOKEN"))
+
 
 import sys
-
-from accelerate import infer_auto_device_map, dispatch_model
 
 sys.path.append("..")
 
@@ -47,11 +49,10 @@ from peft import (
     get_peft_model,
     PeftModel
 )
-from peft.tuners.lora import LoraLayer
 from transformers.trainer_utils import PREFIX_CHECKPOINT_DIR
 
 from QSTConfig import QSTConfig
-from modeling_llama_qst import QSTLlamaForCausalLM,LlamaForCausalLM
+from modeling_llama_qst import QSTLlamaForCausalLM, LlamaForCausalLM
 from modeling_opt_qst import QSTOPTForCausalLM, OPTForCausalLM
 
 
@@ -97,7 +98,7 @@ class ModelArguments:
         metadata={"help": "Enable unpickling of arbitrary code in AutoModelForCausalLM#from_pretrained."}
     )
     use_auth_token: Optional[bool] = field(
-        default=False,
+        default=True,
         metadata={"help": "Enables using Huggingface auth token from Git Credentials."}
     )
 
@@ -238,6 +239,7 @@ class TrainingArguments(transformers.Seq2SeqTrainingArguments):
                                   metadata={"help": 'How many checkpoints to save before the oldest is overwritten'})
 
 
+
 @dataclass
 class GenerationArguments:
     # For more hyperparameters check:
@@ -291,12 +293,12 @@ class SavePeftModelCallback(transformers.TrainerCallback):
             checkpoint_folder = os.path.join(state.best_model_checkpoint, "QST_model")
         else:
             checkpoint_folder = os.path.join(args.output_dir, f"{PREFIX_CHECKPOINT_DIR}-{state.global_step}")
-        
+
         if not os.path.exists(checkpoint_folder):
             try:
                 os.makedirs(checkpoint_folder, exist_ok=True)
             except Exception as e:
-                print(f"创建目录失败: {e}")
+                print(f"Fail to creat the folder: {e}")
                 raise
 
         kwargs["model"].save_qst_state(checkpoint_folder)
@@ -334,33 +336,11 @@ def get_accelerate_model(args, checkpoint_dir):
 
     print(f'loading base model {args.model_name_or_path}...')
     compute_dtype = (torch.float16 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32))
-    # if "opt" in args.model_name_or_path:
-    #     model = OPTForCausalLM.from_pretrained(
-    #         args.model_name_or_path,
-    #         cache_dir=args.cache_dir,
-    #         load_in_4bit=args.bits == 4,
-    #         load_in_8bit=args.bits == 8,
-    #         device_map=device_map,
-    #         max_memory=max_memory,
-    #         quantization_config=BitsAndBytesConfig(
-    #             load_in_4bit=args.bits == 4,
-    #             load_in_8bit=args.bits == 8,
-    #             llm_int8_threshold=6.0,
-    #             llm_int8_has_fp16_weight=False,
-    #             bnb_4bit_compute_dtype=compute_dtype,
-    #             bnb_4bit_use_double_quant=args.double_quant,
-    #             bnb_4bit_quant_type=args.quant_type,
-    #         ),
-    #         torch_dtype=(torch.float32 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32)),
-    #         trust_remote_code=args.trust_remote_code,
-    #         use_auth_token=args.use_auth_token
-    #     )
-    # elif "Llama" in args.model_name_or_path:
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name_or_path,
         cache_dir=args.cache_dir,
-        load_in_4bit=args.bits == 4,
-        load_in_8bit=args.bits == 8,
+        # load_in_4bit=args.bits == 4,
+        # load_in_8bit=args.bits == 8,
         device_map=device_map,
         max_memory=max_memory,
         quantization_config=BitsAndBytesConfig(
@@ -375,7 +355,6 @@ def get_accelerate_model(args, checkpoint_dir):
         torch_dtype=(torch.float32 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32)),
         trust_remote_code=args.trust_remote_code,
         use_auth_token=args.use_auth_token,
-        #local_files_only=True
     )
 
     if compute_dtype == torch.float16 and args.bits == 4:
@@ -415,7 +394,6 @@ def get_accelerate_model(args, checkpoint_dir):
         # Note that these are present in the vocabulary.
         # Note also that `model.config.pad_token_id` is 0 which corresponds to `<unk>` token.
         print('Adding special tokens.')
-        # print(model.config.pad_token_id)
         model.config.pad_token_id = 0
         tokenizer.add_special_tokens({
             "eos_token": tokenizer.convert_ids_to_tokens(model.config.eos_token_id),
@@ -425,15 +403,12 @@ def get_accelerate_model(args, checkpoint_dir):
             ),
         })
 
-
     if not args.full_finetune:
         model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=args.gradient_checkpointing)
 
     if not args.full_finetune:
         config = AutoConfig.from_pretrained(args.model_name_or_path)
         config.rope_theta = 10000.0
-        # print(config.vocab_size)
-        # exit(0)
         qst_config = QSTConfig(
             add_layer_norm_before_adapter=False,
             add_layer_norm_after_adapter=True,
@@ -451,12 +426,8 @@ def get_accelerate_model(args, checkpoint_dir):
             # model = dispatch_model(model, device_map)
         elif 'opt' in args.model_name_or_path:
             model = QSTOPTForCausalLM(model, config, qst_config)
-        #     # device_map = infer_auto_device_map(model, no_split_module_classes=["OPTDecoderLayer"])
-        #     # model = dispatch_model(model, device_map)
-
-
-        setattr(model, 'model_parallel', True)
-        setattr(model, 'is_parallelizable', True)
+            # device_map = infer_auto_device_map(model, no_split_module_classes=["OPTDecoderLayer"])
+            # model = dispatch_model(model, device_map)
 
         model.config.torch_dtype = (torch.float32 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32))
 
@@ -476,6 +447,7 @@ def get_accelerate_model(args, checkpoint_dir):
             if hasattr(module, 'weight'):
                 if args.bf16 and module.weight.dtype == torch.float32:
                     module = module.to(torch.bfloat16)
+
     return model, tokenizer
 
 
@@ -491,11 +463,7 @@ def print_trainable_parameters(args, model):
         if "model.layer" in name:
             param.requires_grad = False
         all_param += param.numel()
-        # if "lm_head" in name:
-        #     param.requires_grad = True
         if param.requires_grad:
-            # if "qst" not in name and "down" not in name and "z" not in name:
-            # print(name)
             trainable_params += param.numel()
     if args.bits == 4: trainable_params /= 2
     print(
@@ -503,7 +471,6 @@ def print_trainable_parameters(args, model):
         f"all params: {all_param} || "
         f"trainable: {100 * trainable_params / all_param}"
     )
-    # exit(0)
 
 
 def smart_tokenizer_and_embedding_resize(
@@ -683,7 +650,6 @@ def make_data_module(tokenizer: transformers.PreTrainedTokenizer, args) -> Dict:
             raise NotImplementedError("Vicuna data was not released.")
         else:
             if os.path.exists(dataset_name):
-                # print(os.path.exists(dataset_name))
                 try:
                     args.dataset_format = args.dataset_format if args.dataset_format else "input-output"
                     full_dataset = local_dataset(dataset_name)
@@ -727,8 +693,7 @@ def make_data_module(tokenizer: transformers.PreTrainedTokenizer, args) -> Dict:
         return dataset
 
     # Load dataset.
-    #dataset = load_data(args.dataset)
-    dataset = load_dataset("openassistant-guanaco")
+    dataset = load_data(args.dataset)
     dataset = format_dataset(dataset, args.dataset_format)
 
     # Split train/eval, reduce size
@@ -805,7 +770,7 @@ def train():
     set_seed(args.seed)
 
     data_module = make_data_module(tokenizer=tokenizer, args=args)
-
+    training_args.bf16 = True
     trainer = Seq2SeqTrainer(
         model=model,
         tokenizer=tokenizer,
