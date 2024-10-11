@@ -770,131 +770,191 @@ class QSTOPTDecoder(OPTPreTrainedModel):
         self.padding_idx = OPTDecoder.padding_idx
         self.max_target_positions = OPTDecoder.max_target_positions
         self.vocab_size = OPTDecoder.vocab_size
-        self.blackbone = OPTDecoder.layers
 
-        self.embed_tokens = nn.Embedding(self.vocab_size, config.word_embed_proj_dim, self.padding_idx).to(
-            ("cuda:" + str(hf_device_map["model.embed_tokens"])))
+        self.hf_device_map = {}
+
+        # Helper functions to get device and device index
+        def get_device(hf_device_map, key, default_device):
+            """
+            Get the device for a module based on hf_device_map and default_device.
+            If the key exists in hf_device_map, return the corresponding device.
+            If hf_device_map is {'': device_index}, return that device.
+            Otherwise, return default_device.
+            """
+            if key in hf_device_map:
+                device_index = hf_device_map[key]
+            elif '' in hf_device_map:
+                device_index = hf_device_map['']
+            else:
+                # If neither key nor default key is in hf_device_map, return default_device
+                return default_device
+
+            # Handle different types of device specifications
+            if isinstance(device_index, int) or (isinstance(device_index, str) and device_index.isdigit()):
+                # Device index is an integer or string digit (e.g., '0')
+                device = torch.device(f"cuda:{device_index}")
+            elif isinstance(device_index, str) and device_index.lower() == 'cpu':
+                # Device is specified as 'cpu'
+                device = torch.device('cpu')
+            elif isinstance(device_index, str) and device_index.startswith('cuda'):
+                # Device is specified as 'cuda:x'
+                device = torch.device(device_index)
+            else:
+                # Default to default_device if device specification is unrecognized
+                device = default_device
+
+            return device
+
+        def get_device_index(hf_device_map, key):
+            """
+            Get the device index from hf_device_map for a given key.
+            """
+            if key in hf_device_map:
+                device_index = hf_device_map[key]
+            elif '' in hf_device_map:
+                device_index = hf_device_map['']
+            else:
+                # Default to 'cpu'
+                device_index = 'cpu'
+
+            return device_index
+
+        # Handle default device
+        try:
+            default_device = next(OPTDecoder.parameters()).device
+        except StopIteration:
+            default_device = torch.device('cpu')
+
+        # Handle embed_tokens
+        self.embed_tokens = nn.Embedding(self.vocab_size, config.word_embed_proj_dim, self.padding_idx)
         self.embed_tokens.weight = OPTDecoder.embed_tokens.weight
         self.embed_tokens.weight.requires_grad = False
-        self.hf_device_map["model.embed_tokens"] = hf_device_map["model.embed_tokens"]
 
-        self.embed_positions = OPTLearnedPositionalEmbedding(config.max_position_embeddings, config.hidden_size).to(
-            "cuda:" + str(hf_device_map["model.embed_positions"]))
+        # Get device for embed_tokens
+        embed_tokens_device = get_device(hf_device_map, "model.embed_tokens", default_device)
+        self.embed_tokens = self.embed_tokens.to(embed_tokens_device)
+        self.hf_device_map["model.embed_tokens"] = get_device_index(hf_device_map, "model.embed_tokens")
+
+        # Handle embed_positions
+        self.embed_positions = OPTLearnedPositionalEmbedding(config.max_position_embeddings, config.hidden_size)
         self.embed_positions.weight = OPTDecoder.embed_positions.weight
         self.embed_positions.weight.requires_grad = False
-        self.hf_device_map["model.embed_positions"] = hf_device_map["model.embed_positions"]
 
-        self.downsample = nn.ModuleList([AdapterLinear(in_features=config.hidden_size,
-                                                       out_features=int(config.hidden_size / QSTConfig.r),
-                                                       r=int(QSTConfig.peft_hidden_size),
-                                                       alpha_r=int(QSTConfig.peft_hidden_size),
-                                                       activation=QSTConfig.activation,
-                                                       # num_expert=QSTConfig.num_expert,
-                                                       # routing_strategy=QSTConfig.routing_strategy,
-                                                       # weight_average=QSTConfig.weight_average,
-                                                       add_layer_norm_after_adapter=QSTConfig.add_layer_norm_after_adapter,
-                                                       add_layer_norm_before_adapter=QSTConfig.add_layer_norm_before_adapter,
-                                                       dropout=QSTConfig.dropout)
-                                         for i in range(config.num_hidden_layers)])
+        # Get device for embed_positions
+        embed_positions_device = get_device(hf_device_map, "model.embed_positions", default_device)
+        self.embed_positions = self.embed_positions.to(embed_positions_device)
+        self.hf_device_map["model.embed_positions"] = get_device_index(hf_device_map, "model.embed_positions")
 
-        self.z = nn.ParameterList(
-            [nn.Parameter(torch.Tensor([1.0 for i in range(config.hidden_size)])) for i in
-             range(config.num_hidden_layers)])
+        # Handle backbone (decoder layers)
+        self.backbone = OPTDecoder.layers
 
+        # Create downsample modules
+        self.downsample = nn.ModuleList([
+            AdapterLinear(
+                in_features=config.hidden_size,
+                out_features=int(config.hidden_size / QSTConfig.r),
+                r=int(QSTConfig.peft_hidden_size),
+                alpha_r=int(QSTConfig.peft_hidden_size),
+                activation=QSTConfig.activation,
+                add_layer_norm_after_adapter=QSTConfig.add_layer_norm_after_adapter,
+                add_layer_norm_before_adapter=QSTConfig.add_layer_norm_before_adapter,
+                dropout=QSTConfig.dropout,
+                bias=False
+            )
+            for _ in range(config.num_hidden_layers)
+        ])
+
+        # Create parameter z
+        self.z = nn.ParameterList([
+            nn.Parameter(torch.ones(config.hidden_size))
+            for _ in range(config.num_hidden_layers)
+        ])
+
+        # Handle project_out
         if config.word_embed_proj_dim != config.hidden_size:
-            if isinstance(OPTDecoder.project_out, bnb.nn.Linear8bitLt):
-                self.project_out = bnb.nn.Linear8bitLt(config.hidden_size, config.word_embed_proj_dim, bias=False).to(
-                    "cuda:" + str(hf_device_map["model.project_out"]))
+            project_out_device = get_device(hf_device_map, "model.project_out", default_device)
+            if isinstance(OPTDecoder.project_out, nn.Linear):
+                self.project_out = nn.Linear(config.hidden_size, config.word_embed_proj_dim, bias=False)
                 self.project_out.weight = OPTDecoder.project_out.weight
                 self.project_out.weight.requires_grad = False
-                self.hf_device_map["model.project_out"] = hf_device_map["model.project_out"]
-            elif isinstance(OPTDecoder.project_out, bnb.nn.Linear4bit):
-                self.project_out = bnb.nn.Linear4bit(config.hidden_size, config.word_embed_proj_dim, bias=False).to(
-                    "cuda:" + str(hf_device_map["model.project_out"]))
-                self.project_out.weight = OPTDecoder.project_out.weight
-                self.hf_device_map["model.project_out"] = hf_device_map["model.project_out"]
-                self.project_out.weight.requires_grad = False
-            elif isinstance(OPTDecoder.project_out, nn.Linear):
-                self.project_out = nn.Linear(config.hidden_size, config.word_embed_proj_dim, bias=False).to(
-                    "cuda:" + str(hf_device_map["model.project_out"]))
-                self.project_out.weight = OPTDecoder.project_out.weight
-                self.hf_device_map["model.project_out"] = hf_device_map["model.project_out"]
-                self.project_out.weight.requires_grad = False
+                self.project_out = self.project_out.to(project_out_device)
+                self.hf_device_map["model.project_out"] = get_device_index(hf_device_map, "model.project_out")
             else:
+                # Handle other possible types if necessary
                 raise NotImplementedError
         else:
             self.project_out = None
 
+        # Handle project_in
         if config.word_embed_proj_dim != config.hidden_size:
-            # self.project_in = nn.Linear(config.word_embed_proj_dim, config.hidden_size, bias=False)
-            if isinstance(OPTDecoder.project_in, bnb.nn.Linear8bitLt):
-                self.project_in = bnb.nn.Linear8bitLt(config.hidden_size, config.word_embed_proj_dim, bias=False).to(
-                    "cuda:" + str(hf_device_map["model.project_in"]))
+            project_in_device = get_device(hf_device_map, "model.project_in", default_device)
+            if isinstance(OPTDecoder.project_in, nn.Linear):
+                self.project_in = nn.Linear(config.word_embed_proj_dim, config.hidden_size, bias=False)
                 self.project_in.weight = OPTDecoder.project_in.weight
                 self.project_in.weight.requires_grad = False
-                self.hf_device_map["model.project_in"] = hf_device_map["model.project_in"]
-            elif isinstance(OPTDecoder.project_in, bnb.nn.Linear4bit):
-                self.project_in = bnb.nn.Linear4bit(config.hidden_size, config.word_embed_proj_dim, bias=False).to(
-                    "cuda:" + str(hf_device_map["model.project_in"]))
-                self.project_in.weight = OPTDecoder.project_in.weight
-                self.project_in.weight.requires_grad = False
-                self.hf_device_map["model.project_in"] = hf_device_map["model.project_in"]
-            elif isinstance(OPTDecoder.project_in, nn.Linear):
-                self.project_in = nn.Linear(config.hidden_size, config.word_embed_proj_dim, bias=False).to(
-                    "cuda:" + str(hf_device_map["model.project_in"]))
-                self.project_in.weight = OPTDecoder.project_in.weight
-                self.project_in.weight.requires_grad = False
-                self.hf_device_map["model.project_in"] = hf_device_map["model.project_in"]
+                self.project_in = self.project_in.to(project_in_device)
+                self.hf_device_map["model.project_in"] = get_device_index(hf_device_map, "model.project_in")
             else:
+                # Handle other possible types if necessary
                 raise NotImplementedError
         else:
             self.project_in = None
 
-        # Note that the only purpose of `config._remove_final_layer_norm` is to keep backward compatibility
-        # with checkpoints that have been fine-tuned before transformers v4.20.1
-        # see https://github.com/facebookresearch/metaseq/pull/164
+        # Handle final_layer_norm and final_layer_norm_qst
         if config.do_layer_norm_before and not config._remove_final_layer_norm:
+            final_layer_norm_device = get_device(hf_device_map, "model.final_layer_norm", default_device)
             self.final_layer_norm = nn.LayerNorm(
                 config.hidden_size, elementwise_affine=config.layer_norm_elementwise_affine
-            ).to("cuda:" + str(hf_device_map["model.final_layer_norm"]))
+            )
             self.final_layer_norm.weight = OPTDecoder.final_layer_norm.weight
+            self.final_layer_norm.bias = OPTDecoder.final_layer_norm.bias
             self.final_layer_norm.weight.requires_grad = False
-            self.hf_device_map["model.final_layer_norm"] = hf_device_map["model.final_layer_norm"]
+            self.final_layer_norm.bias.requires_grad = False
+            self.final_layer_norm = self.final_layer_norm.to(final_layer_norm_device)
+            self.hf_device_map["model.final_layer_norm"] = get_device_index(hf_device_map, "model.final_layer_norm")
 
             self.final_layer_norm_qst = nn.LayerNorm(
                 int(config.hidden_size / QSTConfig.r), elementwise_affine=config.layer_norm_elementwise_affine
-            ).to("cuda:" + str(hf_device_map["model.final_layer_norm"]))
-            self.hf_device_map["model.final_layer_norm_qst"] = hf_device_map["model.final_layer_norm_qst"]
+            )
+            self.final_layer_norm_qst = self.final_layer_norm_qst.to(final_layer_norm_device)
+            self.hf_device_map["model.final_layer_norm_qst"] = get_device_index(hf_device_map,
+                                                                                "model.final_layer_norm_qst")
         else:
             self.final_layer_norm = None
             self.final_layer_norm_qst = None
 
         config.hidden_size = int(config.hidden_size / QSTConfig.r)
         config.ffn_dim = int(config.ffn_dim / QSTConfig.r)
-        # config.layerdrop = 0.05
-        self.qst_layers = nn.ModuleList(
-            [OPTDecoderLayer(config).to(self.blackbone[i].fc1.weight.device) for i in range(config.num_hidden_layers)])
+
+        # Create qst_layers
+        self.qst_layers = nn.ModuleList([
+            OPTDecoderLayer(config)
+            for _ in range(config.num_hidden_layers)
+        ])
 
         self.gradient_checkpointing = False
 
+        # Handle device mapping for each layer
         for i in range(config.num_hidden_layers):
-            gpu = "cuda:" + str(hf_device_map[f"model.layers.{i}"])
-            self.blackbone[i] = self.blackbone[i].to(gpu)
-            self.hf_device_map[f"model.blackbone.{i}"] = hf_device_map[f"model.layers.{i}"]
-            self.z[i] = self.z[i].to(gpu)
-            self.hf_device_map[f"model.z.{i}"] = hf_device_map[f"model.layers.{i}"]
-            self.qst_layers[i] = self.qst_layers[i].to(gpu)
-            self.hf_device_map[f"model.qst_layers.{i}"] = hf_device_map[f"model.layers.{i}"]
-            self.downsample[i] = self.downsample[i].to(gpu)
-            self.hf_device_map[f"model.downsample.{i}"] = hf_device_map[f"model.layers.{i}"]
-        # Initialize weights and apply final processing
-        # self.post_init()
+            layer_key = f"model.layers.{i}"
+            layer_device = get_device(hf_device_map, layer_key, default_device)
+            layer_device_index = get_device_index(hf_device_map, layer_key)
 
-    def get_input_embeddings(self):
-        return self.embed_tokens
+            # Move backbone layer to the appropriate device
+            self.backbone[i] = self.backbone[i].to(layer_device)
+            self.hf_device_map[f"model.backbone.{i}"] = layer_device_index
 
-    def set_input_embeddings(self, value):
-        self.embed_tokens = value
+            # Move z parameter to the appropriate device
+            self.z[i] = self.z[i].to(layer_device)
+            self.hf_device_map[f"model.z.{i}"] = layer_device_index
+
+            # Move qst_layers to the appropriate device
+            self.qst_layers[i] = self.qst_layers[i].to(layer_device)
+            self.hf_device_map[f"model.qst_layers.{i}"] = layer_device_index
+
+            # Move downsample to the appropriate device
+            self.downsample[i] = self.downsample[i].to(layer_device)
+            self.hf_device_map[f"model.downsample.{i}"] = layer_device_index
 
     # Copied from transformers.models.bart.modeling_bart.BartDecoder._prepare_decoder_attention_mask
     def _prepare_decoder_attention_mask(self, attention_mask, input_shape, inputs_embeds, past_key_values_length):
@@ -1571,20 +1631,27 @@ class QSTOPTForCausalLM(OPTPreTrainedModel):
         # the lm_head weight is automatically tied to the embed tokens weight
         self.lm_head_z = nn.Parameter(torch.Tensor([1.0 for i in range(self.hidden_size)])).to(
             llm.lm_head.weight.device)
+
         self.upsample = nn.Linear(self.qst_hidden_dim, config.word_embed_proj_dim).to(
             llm.lm_head.weight.device)
+
         self.lm_head = nn.Linear(config.word_embed_proj_dim, config.vocab_size, bias=False).to(llm.lm_head.weight.device)
         self.lm_head.weight = llm.lm_head.weight
         self.lm_head.weight.requires_grad = False
-        # self.lm_head.weight.requires_grad = False
 
-        self.hf_device_map["lm_head"] = llm.hf_device_map["lm_head"]
-        self.hf_device_map["lm_head_z"] = llm.hf_device_map["lm_head"]
-        self.hf_device_map["upsample"] = llm.hf_device_map["lm_head"]
+        if str(llm.lm_head.weight.device) == 'cpu':
+            self.hf_device_map["lm_head"] = 'cpu'
+            self.hf_device_map["lm_head_z"] = 'cpu'
+            self.hf_device_map["upsample"] = 'cpu'
+        else:
+            self.hf_device_map["lm_head"] = "cuda:" + str(llm.lm_head.weight.device)
+            self.hf_device_map["lm_head_z"] = "cuda:" + str(llm.lm_head.weight.device)
+            self.hf_device_map["upsample"] = "cuda:" + str(llm.lm_head.weight.device)
+
+        if llm.hf_device_map == {'': 0}:
+            self.hf_device_map = {'': 0}
 
         del llm
-        # Initialize weights and apply final processing
-        # self.post_init()
 
     def get_input_embeddings(self):
         return self.model.decoder.embed_tokens
@@ -1943,9 +2010,14 @@ class QSTOPTForSequenceClassification(OPTPreTrainedModel):
         self.score.weight = llm.score.weight
         self.score.weight.requires_grad = False
 
-        self.hf_device_map["upsample"] = llm.hf_device_map["lm_head"]
-        self.hf_device_map["score"] = llm.hf_device_map["lm_head"]
-        self.hf_device_map["lm_head_z"] = llm.hf_device_map["lm_head"]
+        if str(llm.lm_head.weight.device) == 'cpu':
+            self.hf_device_map["score"] = 'cpu'
+            self.hf_device_map["lm_head_z"] = 'cpu'
+            self.hf_device_map["upsample"] = 'cpu'
+        else:
+            self.hf_device_map["score"] = "cuda:" + str(llm.lm_head.weight.device)
+            self.hf_device_map["lm_head_z"] = "cuda:" + str(llm.lm_head.weight.device)
+            self.hf_device_map["upsample"] = "cuda:" + str(llm.lm_head.weight.device)
 
         del llm
 
