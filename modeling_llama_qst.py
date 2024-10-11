@@ -767,10 +767,13 @@ class LlamaModel(LlamaPreTrainedModel):
 # QSTLlamaModel
 class QSTLlamaModel(LlamaPreTrainedModel):
     """
-    Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`LlamaDecoderLayer`]
+    Transformer decoder consisting of *config.num_hidden_layers* layers.
 
     Args:
+        llm: LlamaModel
         config: LlamaConfig
+        QSTConfig
+        hf_device_map
     """
 
     def __init__(self, llm: LlamaModel, config: LlamaConfig, QSTConfig, hf_device_map):
@@ -780,60 +783,118 @@ class QSTLlamaModel(LlamaPreTrainedModel):
         self.vocab_size = config.vocab_size
 
         self.hf_device_map = {}
-        # self.config = llm.config
 
+        # set the default device
+        default_device = next(llm.parameters()).device
+
+        # initialize the embed_tokens module
         self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size, self.padding_idx)
         self.embed_tokens.weight = llm.embed_tokens.weight
         self.embed_tokens.weight.requires_grad = False
-        self.embed_tokens = self.embed_tokens.to(("cuda:" + str(hf_device_map["model.embed_tokens"])))
-        self.hf_device_map["model.embed_tokens"] = hf_device_map["model.embed_tokens"]
 
-        self.blackbone = llm.layers
+        # set the embed_tokens device
+        embed_tokens_device = self.get_device(hf_device_map, "model.embed_tokens", default_device)
+        self.embed_tokens = self.embed_tokens.to(embed_tokens_device)
+        self.hf_device_map["model.embed_tokens"] = self.get_device_index(hf_device_map, "model.embed_tokens")
+
+        # set the backbone to the original llm.layers
+        self.backbone = llm.layers
+
+        # initialize the norm module
         self.norm = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
         self.norm.weight = llm.norm.weight
         self.norm.weight.requires_grad = False
 
+        # set the norm device
+        norm_device = self.get_device(hf_device_map, "model.norm", default_device)
+        self.norm = self.norm.to(norm_device)
+        self.hf_device_map["model.norm"] = self.get_device_index(hf_device_map, "model.norm")
+
         self.gradient_checkpointing = False
 
-        self.downsample = nn.ModuleList([AdapterLinear(in_features=config.hidden_size,
-                                                       out_features=int(config.hidden_size / QSTConfig.r),
-                                                       r=int(QSTConfig.peft_hidden_size),
-                                                       alpha_r=int(QSTConfig.peft_hidden_size),
-                                                       activation=QSTConfig.activation,
-
-                                                       add_layer_norm_after_adapter=QSTConfig.add_layer_norm_after_adapter,
-                                                       add_layer_norm_before_adapter=QSTConfig.add_layer_norm_before_adapter,
-                                                       dropout=QSTConfig.dropout)
-                                         for i in range(config.num_hidden_layers)])
+        # initialize the downsample module
+        self.downsample = nn.ModuleList([
+            AdapterLinear(
+                in_features=config.hidden_size,
+                out_features=int(config.hidden_size / QSTConfig.r),
+                r=int(QSTConfig.peft_hidden_size),
+                alpha_r=int(QSTConfig.peft_hidden_size),
+                activation=QSTConfig.activation,
+                add_layer_norm_after_adapter=QSTConfig.add_layer_norm_after_adapter,
+                add_layer_norm_before_adapter=QSTConfig.add_layer_norm_before_adapter,
+                dropout=QSTConfig.dropout
+            )
+            for _ in range(config.num_hidden_layers)
+        ])
 
         config.hidden_size = int(config.hidden_size / QSTConfig.r)
         config.intermediate_size = int(config.intermediate_size / QSTConfig.r)
 
-        self.z = nn.ParameterList(
-            [nn.Parameter(torch.Tensor([1.0 for i in range(config.hidden_size)])) for i in
-             range(config.num_hidden_layers)])
+        # initialize the parameter z
+        self.z = nn.ParameterList([
+            nn.Parameter(torch.ones(config.hidden_size))
+            for _ in range(config.num_hidden_layers)
+        ])
 
-        # .to(self.blackbone[i].post_attention_layernorm.weight.device)
-        self.qst_layers = nn.ModuleList([LlamaDecoderLayer(config) for i in range(config.num_hidden_layers)])
+        #  initialize the qst_layers module
+        self.qst_layers = nn.ModuleList([
+            LlamaDecoderLayer(config)
+            for _ in range(config.num_hidden_layers)
+        ])
 
-        # .to(self.norm.weight.device)
+        # initialize the norm_qst module
         self.norm_qst = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        self.norm_qst = self.norm_qst.to(("cuda:" + str(hf_device_map["model.norm"])))
-        self.hf_device_map["model.norm_qst"] = hf_device_map["model.norm"]
-        self.hf_device_map["model.norm"] = hf_device_map["model.norm"]
+        norm_qst_device = self.get_device(hf_device_map, "model.norm", default_device)
+        self.norm_qst = self.norm_qst.to(norm_qst_device)
+        self.hf_device_map["model.norm_qst"] = self.get_device_index(hf_device_map, "model.norm")
 
+        # set up the device for parallel
         for i in range(config.num_hidden_layers):
-            gpu = "cuda:" + str(hf_device_map[f"model.layers.{i}"])
-            self.blackbone[i] = self.blackbone[i].to(gpu)
-            self.hf_device_map[f"model.blackbone.{i}"] = hf_device_map[f"model.layers.{i}"]
-            self.z[i] = self.z[i].to(gpu)
-            self.hf_device_map[f"model.z.{i}"] = hf_device_map[f"model.layers.{i}"]
-            self.qst_layers[i] = self.qst_layers[i].to(gpu)
-            self.hf_device_map[f"model.qst_layers.{i}"] = hf_device_map[f"model.layers.{i}"]
-            self.downsample[i] = self.downsample[i].to(gpu)
-            self.hf_device_map[f"model.downsample.{i}"] = hf_device_map[f"model.layers.{i}"]
-        # Initialize weights and apply final processing
-        # self.post_init()
+            layer_key = f"model.layers.{i}"
+            layer_device = self.get_device(hf_device_map, layer_key, default_device)
+            layer_device_index = self.get_device_index(hf_device_map, layer_key)
+
+            self.backbone[i] = self.backbone[i].to(layer_device)
+            self.hf_device_map[f"model.backbone.{i}"] = layer_device_index
+
+            self.z[i] = self.z[i].to(layer_device)
+            self.hf_device_map[f"model.z.{i}"] = layer_device_index
+
+            self.qst_layers[i] = self.qst_layers[i].to(layer_device)
+            self.hf_device_map[f"model.qst_layers.{i}"] = layer_device_index
+
+            self.downsample[i] = self.downsample[i].to(layer_device)
+            self.hf_device_map[f"model.downsample.{i}"] = layer_device_index
+
+    def get_device(self, hf_device_map, key, default_device):
+        """
+        Get the device according to hf_device_map.
+        If key exists in hf_device_map, return the corresponding device.
+        If hf_device_map is {'': device_index}, return the device.
+        Otherwise, return default_device.
+        """
+        if key in hf_device_map:
+            device_index = hf_device_map[key]
+            return torch.device(f"cuda:{device_index}")
+        elif '' in hf_device_map:
+            device_index = hf_device_map['']
+            return torch.device(f"cuda:{device_index}")
+        else:
+            return default_device
+
+    def get_device_index(self, hf_device_map, key):
+        """
+        Get the device index according to hf_device_map.
+        """
+        if key in hf_device_map:
+            return hf_device_map[key]
+        elif '' in hf_device_map:
+            return hf_device_map['']
+        else:
+            return 0
+
+    # Initialize weights and apply final processing
+    # self.post_init()
 
     def get_input_embeddings(self):
         return self.embed_tokens
@@ -962,7 +1023,7 @@ class QSTLlamaModel(LlamaPreTrainedModel):
             qst_next_decoder_cache = None
 
         qst_hidden_states = self.downsample[0](hidden_states)
-        for idx, decoder_layer in enumerate(self.blackbone):
+        for idx, decoder_layer in enumerate(self.backbone):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
 
@@ -1277,11 +1338,14 @@ class QSTLlamaForCausalLM(LlamaPreTrainedModel):
         self.lm_head.weight = llm.lm_head.weight
         self.lm_head.weight.requires_grad = False
 
-        self.hf_device_map["lm_head"] = llm.hf_device_map["lm_head"]
-        self.hf_device_map["lm_head_z"] = llm.hf_device_map["lm_head"]
+        self.hf_device_map["lm_head"] = "cuda:" + str(llm.lm_head.weight.device)
+        self.hf_device_map["lm_head_z"] = "cuda:" + str(llm.lm_head.weight.device)
 
         self.upsample = nn.Linear(int(self.hidden_size / qstconfig.r), self.hidden_size).to(llm.lm_head.weight.device)
-        self.hf_device_map["upsample"] = llm.hf_device_map["lm_head"]
+        self.hf_device_map["upsample"] = "cuda:" + str(llm.lm_head.weight.device)
+
+        if llm.hf_device_map == {'': 0}:
+            self.hf_device_map = {'': 0}
 
         del llm
 
@@ -1606,21 +1670,27 @@ class QSTLlamaForSequenceClassification(LlamaPreTrainedModel):
         super().__init__(config)
         self.num_labels = llm.num_labels
         self.hidden_size = config.hidden_size
-        self.model = QSTLlamaModel(llm.model, config, qstconfig)
-
-        self.upsample = nn.Linear(int(self.hidden_size / qstconfig.r), self.hidden_size).to(
-            llm.model.device)
-
-        self.score = nn.Linear(self.hidden_size, self.num_labels, bias=False).to(llm.score.weight)
-        self.score.weight = llm.score.weight
-        self.score.weight.requires_grad = False
         self.config = llm.config
 
-        self.upsample = nn.Linear(int(self.hidden_size / qstconfig.r), self.hidden_size).to(llm.lm_head.weight.device)
+        self.model = QSTLlamaModel(llm.model, config, qstconfig,llm.hf_device_map)
 
-        self.hf_device_map["upsample"] = llm.hf_device_map["score"]
-        self.hf_device_map["score"] = llm.hf_device_map["score"]
-        self.hf_device_map["lm_head_z"] = llm.hf_device_map["score"]
+        self.score = nn.Linear(self.hidden_size, self.num_labels, bias=False).to(llm.score.weight.device)
+        self.score.weight = llm.score.weight
+        self.score.weight.requires_grad = False
+
+        self.upsample = nn.Linear(int(self.hidden_size / qstconfig.r), self.hidden_size).to(llm.score.weight.device)
+
+        self.lm_head_z = nn.Parameter(torch.Tensor([1.0 for i in range(self.hidden_size)])).to(
+            llm.score.weight.device)
+
+        self.hf_device_map["upsample"] = "cuda:" + str(llm.score.weight.device)
+        self.hf_device_map["score"] = "cuda:" + str(llm.score.weight.device)
+        self.hf_device_map["lm_head_z"] = "cuda:" + str(llm.score.weight.device)
+
+        if llm.hf_device_map == {'': 0}:
+            self.hf_device_map = {'': 0}
+
+        del llm
         # Initialize weights and apply final processing
         # self.post_init()
 
