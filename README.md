@@ -7,6 +7,7 @@
 - [Features](#features)
 - [Installation](#installation)
 - [Usage](#usage)
+- [Docker Image](#docker-image)
 - [Contributing](#contributing)
 - [License](#license)
 - [Acknowledgements](#acknowledgements)
@@ -95,6 +96,24 @@ Experiments show that QST can reduce the total memory footprint by up to 2.3 tim
   ```
    python chatbot_sample.py
  ```
+
+## Docker Image {#docker-image}
+  QST docker image is available on docker hub.
+  1. pull docker image
+  ```
+  docker pull geniedan/qst-docker:v5
+  ```
+  2. load the docker image
+  3. if you have the model saved in your local device, please run
+  ```
+  docker run --gpus all -it --rm -v /path/to/your/model:/models qst-docker:v5 bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate QST && ./qst-70b.sh /models/your-model-name"
+  ```
+  remember to replace /path/to/your/model and your-model-name with your local path and model name.
+  
+  5. if you wish to pull load a model from hugging face, please run 
+  ```
+  docker run --gpus all -it --rm qst-docker:v5 bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate QST && ./qst-70b.sh model-name"
+  ```
 
 ## Contributing
 Zhengxin Zhang, Dan Zhao, Xupeng Miao, Gabriele Oliaro, Zhihao Zhang, Qing Li, Yong Jiang, and Zhihao Jia.
