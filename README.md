@@ -97,7 +97,7 @@ Experiments show that QST can reduce the total memory footprint by up to 2.3 tim
    python chatbot_sample.py
  ```
 
-## Docker Image {#docker-image}
+## Docker Image
   QST docker image is available on docker hub.
   1. pull docker image
   ```
