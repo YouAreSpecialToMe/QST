@@ -37,6 +37,7 @@ from transformers.utils import add_start_docstrings, add_start_docstrings_to_mod
     replace_return_docstrings
 from transformers.models.llama.configuration_llama import LlamaConfig
 
+from QSTGenerationMixin import QSTGenerationMixin
 from QSTConfig import AdapterLinear
 from modeling_qst_output import QSTBaseModelOutputWithPast, QSTCausalLMOutputWithPast
 
@@ -874,7 +875,6 @@ class QSTLlamaModel(LlamaPreTrainedModel):
             self.downsample[i] = self.downsample[i].to(layer_device)
             self.hf_device_map[f"model.downsample.{i}"] = layer_device_index
 
-
     def get_device(self, hf_device_map, key, default_device):
         """
         Get the device for a module based on hf_device_map and default_device.
@@ -962,6 +962,8 @@ class QSTLlamaModel(LlamaPreTrainedModel):
             use_cache: Optional[bool] = None,
             output_attentions: Optional[bool] = None,
             output_hidden_states: Optional[bool] = None,
+            output_qst_attentions=False,
+            output_qst_hidden_states=False,
             return_dict: Optional[bool] = None,
     ) -> Union[Tuple, QSTBaseModelOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -1021,35 +1023,21 @@ class QSTLlamaModel(LlamaPreTrainedModel):
                 use_cache = False
 
         # decoder layers
-        # all_hidden_states = () if output_hidden_states else None
-        # all_self_attns = () if output_attentions else None
-        # next_decoder_cache = () if use_cache else None
+        all_hidden_states = () if output_hidden_states else None
+        qst_all_hidden_states = () if output_qst_hidden_states else None
 
-        if output_hidden_states:
-            all_hidden_states = ()
-            qst_all_hidden_states = ()
-        else:
-            all_hidden_states = None
-            qst_all_hidden_states = None
+        all_self_attns = () if output_attentions else None
+        qst_self_attns = () if output_qst_attentions else None
 
-        if output_attentions:
-            all_self_attns = ()
-            qst_self_attns = ()
-        else:
-            all_self_attns = None
-            qst_self_attns = None
-
-        if use_cache:
-            next_decoder_cache = ()
-            qst_next_decoder_cache = ()
-        else:
-            next_decoder_cache = None
-            qst_next_decoder_cache = None
+        next_decoder_cache = () if use_cache else None
+        qst_next_decoder_cache = () if use_cache else None
 
         qst_hidden_states = self.downsample[0](hidden_states)
         for idx, decoder_layer in enumerate(self.backbone):
             if output_hidden_states:
                 all_hidden_states += (hidden_states,)
+            if output_qst_hidden_states:
+                qst_all_hidden_states += (qst_hidden_states,)
 
             past_key_value = past_key_values[idx] if past_key_values is not None else None
             qst_past_key_value = qst_past_key_values[idx] if qst_past_key_values is not None else None
@@ -1114,6 +1102,7 @@ class QSTLlamaModel(LlamaPreTrainedModel):
 
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
+            if output_qst_attentions:
                 qst_self_attns += (qst_layer_outputs[1],)
 
         with torch.no_grad():
@@ -1123,6 +1112,7 @@ class QSTLlamaModel(LlamaPreTrainedModel):
         # add hidden states from the last decoder layer
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
+        if output_qst_hidden_states:
             qst_all_hidden_states += (qst_hidden_states,)
 
         if use_cache:
@@ -1346,7 +1336,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
         return reordered_past
 
 
-class QSTLlamaForCausalLM(LlamaPreTrainedModel):
+class QSTLlamaForCausalLM(QSTGenerationMixin, LlamaPreTrainedModel):
     _tied_weights_keys = ["lm_head.weight"]
 
     def __init__(self, llm: LlamaForCausalLM, config, qstconfig):
@@ -1413,6 +1403,8 @@ class QSTLlamaForCausalLM(LlamaPreTrainedModel):
             use_cache: Optional[bool] = None,
             output_attentions: Optional[bool] = None,
             output_hidden_states: Optional[bool] = None,
+            output_qst_attentions=False,
+            output_qst_hidden_states=False,
             return_dict: Optional[bool] = None,
     ) -> Union[Tuple, CausalLMOutputWithPast]:
         r"""
@@ -1456,8 +1448,10 @@ class QSTLlamaForCausalLM(LlamaPreTrainedModel):
             qst_past_key_values=qst_past_key_values,
             inputs_embeds=inputs_embeds,
             use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=output_hidden_states,
+            output_attentions=output_qst_attentions,
+            output_hidden_states=output_qst_hidden_states,
+            output_qst_attentions=False,
+            output_qst_hidden_states=False,
             return_dict=return_dict,
         )
 
@@ -1510,7 +1504,7 @@ class QSTLlamaForCausalLM(LlamaPreTrainedModel):
         )
 
     def prepare_inputs_for_generation(
-            self, input_ids, past_key_values=None, qst_past_key_values=None, attention_mask=None, inputs_embeds=None,
+            self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None,
             **kwargs
     ):
         if past_key_values:
@@ -1533,7 +1527,7 @@ class QSTLlamaForCausalLM(LlamaPreTrainedModel):
         model_inputs.update(
             {
                 "position_ids": position_ids,
-                "qst_past_key_values": qst_past_key_values,
+                "qst_past_key_values": kwargs.get("qst_past_key_values"),
                 "past_key_values": past_key_values,
                 "use_cache": kwargs.get("use_cache"),
                 "attention_mask": attention_mask,
