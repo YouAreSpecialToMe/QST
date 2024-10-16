@@ -100,7 +100,7 @@ while True:
     user_input = input("You: ")
     user_input = chat_history_ids + "\n### Human: " + user_input + "\n### Assistant: "
 
-    new_user_input_ids = tokenizer.encode(user_input, return_tensors='pt').to("cuda:3")
+    new_user_input_ids = tokenizer.encode(user_input, return_tensors='pt').to("cuda:0")
 
     # if chat_history_ids is not None:
     #     bot_input_ids = torch.cat([chat_history_ids, new_user_input_ids], dim=-1)
