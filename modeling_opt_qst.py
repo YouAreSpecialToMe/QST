@@ -16,6 +16,8 @@
 import os
 from copy import deepcopy
 from typing import List, Optional, Tuple, Union
+
+from QST.QSTGenerationMixin import QSTGenerationMixin
 from QSTConfig import AdapterLinear
 import bitsandbytes as bnb
 
@@ -763,13 +765,13 @@ class QSTOPTDecoder(OPTPreTrainedModel):
 
     """
 
-    def __init__(self, OPTDecoder, config: OPTConfig, QSTConfig, hf_device_map):
+    def __init__(self, llm: OPTDecoder, config: OPTConfig, QSTConfig, hf_device_map):
         super().__init__(config)
-        self.dropout = OPTDecoder.dropout
-        self.layerdrop = OPTDecoder.layerdrop
-        self.padding_idx = OPTDecoder.padding_idx
-        self.max_target_positions = OPTDecoder.max_target_positions
-        self.vocab_size = OPTDecoder.vocab_size
+        self.dropout = llm.dropout
+        self.layerdrop = llm.layerdrop
+        self.padding_idx = llm.padding_idx
+        self.max_target_positions = llm.max_target_positions
+        self.vocab_size = llm.vocab_size
 
         self.hf_device_map = {}
 
@@ -821,13 +823,13 @@ class QSTOPTDecoder(OPTPreTrainedModel):
 
         # Handle default device
         try:
-            default_device = next(OPTDecoder.parameters()).device
+            default_device = next(llm.parameters()).device
         except StopIteration:
             default_device = torch.device('cpu')
 
         # Handle embed_tokens
         self.embed_tokens = nn.Embedding(self.vocab_size, config.word_embed_proj_dim, self.padding_idx)
-        self.embed_tokens.weight = OPTDecoder.embed_tokens.weight
+        self.embed_tokens.weight = llm.embed_tokens.weight
         self.embed_tokens.weight.requires_grad = False
 
         # Get device for embed_tokens
@@ -837,7 +839,7 @@ class QSTOPTDecoder(OPTPreTrainedModel):
 
         # Handle embed_positions
         self.embed_positions = OPTLearnedPositionalEmbedding(config.max_position_embeddings, config.hidden_size)
-        self.embed_positions.weight = OPTDecoder.embed_positions.weight
+        self.embed_positions.weight = llm.embed_positions.weight
         self.embed_positions.weight.requires_grad = False
 
         # Get device for embed_positions
@@ -846,7 +848,7 @@ class QSTOPTDecoder(OPTPreTrainedModel):
         self.hf_device_map["model.embed_positions"] = get_device_index(hf_device_map, "model.embed_positions")
 
         # Handle backbone (decoder layers)
-        self.backbone = OPTDecoder.layers
+        self.backbone = llm.layers
 
         # Create downsample modules
         self.downsample = nn.ModuleList([
@@ -873,9 +875,9 @@ class QSTOPTDecoder(OPTPreTrainedModel):
         # Handle project_out
         if config.word_embed_proj_dim != config.hidden_size:
             project_out_device = get_device(hf_device_map, "model.project_out", default_device)
-            if isinstance(OPTDecoder.project_out, nn.Linear):
+            if isinstance(llm.project_out, nn.Linear):
                 self.project_out = nn.Linear(config.hidden_size, config.word_embed_proj_dim, bias=False)
-                self.project_out.weight = OPTDecoder.project_out.weight
+                self.project_out.weight = llm.project_out.weight
                 self.project_out.weight.requires_grad = False
                 self.project_out = self.project_out.to(project_out_device)
                 self.hf_device_map["model.project_out"] = get_device_index(hf_device_map, "model.project_out")
@@ -888,9 +890,9 @@ class QSTOPTDecoder(OPTPreTrainedModel):
         # Handle project_in
         if config.word_embed_proj_dim != config.hidden_size:
             project_in_device = get_device(hf_device_map, "model.project_in", default_device)
-            if isinstance(OPTDecoder.project_in, nn.Linear):
+            if isinstance(llm.project_in, nn.Linear):
                 self.project_in = nn.Linear(config.word_embed_proj_dim, config.hidden_size, bias=False)
-                self.project_in.weight = OPTDecoder.project_in.weight
+                self.project_in.weight = llm.project_in.weight
                 self.project_in.weight.requires_grad = False
                 self.project_in = self.project_in.to(project_in_device)
                 self.hf_device_map["model.project_in"] = get_device_index(hf_device_map, "model.project_in")
@@ -906,8 +908,8 @@ class QSTOPTDecoder(OPTPreTrainedModel):
             self.final_layer_norm = nn.LayerNorm(
                 config.hidden_size, elementwise_affine=config.layer_norm_elementwise_affine
             )
-            self.final_layer_norm.weight = OPTDecoder.final_layer_norm.weight
-            self.final_layer_norm.bias = OPTDecoder.final_layer_norm.bias
+            self.final_layer_norm.weight = llm.final_layer_norm.weight
+            self.final_layer_norm.bias = llm.final_layer_norm.bias
             self.final_layer_norm.weight.requires_grad = False
             self.final_layer_norm.bias.requires_grad = False
             self.final_layer_norm = self.final_layer_norm.to(final_layer_norm_device)
@@ -991,6 +993,8 @@ class QSTOPTDecoder(OPTPreTrainedModel):
             use_cache: Optional[bool] = None,
             output_attentions: Optional[bool] = None,
             output_hidden_states: Optional[bool] = None,
+            output_qst_attentions=False,
+            output_qst_hidden_states=False,
             return_dict: Optional[bool] = None,
     ) -> Union[Tuple, QSTBaseModelOutputWithPast]:
         r"""
@@ -1097,16 +1101,20 @@ class QSTOPTDecoder(OPTPreTrainedModel):
 
         if output_hidden_states:
             all_hidden_states = ()
-            qst_all_hidden_states = ()
         else:
             all_hidden_states = None
+        if output_qst_hidden_states:
+            qst_all_hidden_states = ()
+        else:
             qst_all_hidden_states = None
 
         if output_attentions:
             all_self_attns = ()
-            qst_self_attns = ()
         else:
             all_self_attns = None
+        if output_qst_attentions:
+            qst_self_attns = ()
+        else:
             qst_self_attns = None
 
         if use_cache:
@@ -1176,7 +1184,7 @@ class QSTOPTDecoder(OPTPreTrainedModel):
                         output_attentions=output_attentions,
                         use_cache=use_cache,
                     )
-                hidden_states = layer_outputs[0].to(decoder_layer.fc1.weight.device)
+                # hidden_states = layer_outputs[0].to(decoder_layer.fc1.weight.device)
 
                 z = torch.sigmoid(self.z[idx])
                 qst_hidden_states = (1 - z) * self.downsample[idx](hidden_states) + z * qst_hidden_states
@@ -1198,6 +1206,7 @@ class QSTOPTDecoder(OPTPreTrainedModel):
 
             if output_attentions:
                 all_self_attns += (layer_outputs[1],)
+            if output_qst_attentions:
                 qst_self_attns += (qst_layer_outputs[1],)
 
         with torch.no_grad():
@@ -1213,6 +1222,7 @@ class QSTOPTDecoder(OPTPreTrainedModel):
         # add hidden states from the last decoder layer
         if output_hidden_states:
             all_hidden_states += (hidden_states,)
+        if output_qst_attentions:
             qst_all_hidden_states += (qst_hidden_states,)
 
         if use_cache:
@@ -1349,9 +1359,9 @@ class OPTModel(OPTPreTrainedModel):
     OPT_START_DOCSTRING,
 )
 class QSTOPTModel(OPTPreTrainedModel):
-    def __init__(self, OPTModel, config: OPTConfig, QSTConfig, hf_device_map):
+    def __init__(self, llm: OPTModel, config: OPTConfig, QSTConfig, hf_device_map):
         super().__init__(config)
-        self.decoder = QSTOPTDecoder(OPTModel.decoder, config, QSTConfig, hf_device_map)
+        self.decoder = QSTOPTDecoder(llm.decoder, config, QSTConfig, hf_device_map)
         # Initialize weights and apply final processing
         # self.post_init()
 
@@ -1377,10 +1387,13 @@ class QSTOPTModel(OPTPreTrainedModel):
             attention_mask: Optional[torch.Tensor] = None,
             head_mask: Optional[torch.Tensor] = None,
             past_key_values: Optional[List[torch.FloatTensor]] = None,
+            qst_past_key_values: Optional[List[torch.FloatTensor]] = None,
             inputs_embeds: Optional[torch.FloatTensor] = None,
             use_cache: Optional[bool] = None,
             output_attentions: Optional[bool] = None,
             output_hidden_states: Optional[bool] = None,
+            output_qst_attentions=False,
+            output_qst_hidden_states=False,
             return_dict: Optional[bool] = None,
     ) -> Union[Tuple, QSTBaseModelOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
@@ -1396,10 +1409,13 @@ class QSTOPTModel(OPTPreTrainedModel):
             attention_mask=attention_mask,
             head_mask=head_mask,
             past_key_values=past_key_values,
+            qst_past_key_values=qst_past_key_values,
             inputs_embeds=inputs_embeds,
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
+            output_qst_attentions=output_qst_attentions,
+            output_qst_hidden_states=output_qst_hidden_states,
             return_dict=return_dict,
         )
 
@@ -1616,7 +1632,7 @@ class OPTForCausalLM(OPTPreTrainedModel):
         return reordered_past
 
 
-class QSTOPTForCausalLM(OPTPreTrainedModel):
+class QSTOPTForCausalLM(OPTPreTrainedModel, QSTGenerationMixin):
     _tied_weights_keys = ["lm_head.weight"]
 
     def __init__(self, llm: OPTForCausalLM, config, QSTConfig):
@@ -1635,7 +1651,8 @@ class QSTOPTForCausalLM(OPTPreTrainedModel):
         self.upsample = nn.Linear(self.qst_hidden_dim, config.word_embed_proj_dim).to(
             llm.lm_head.weight.device)
 
-        self.lm_head = nn.Linear(config.word_embed_proj_dim, config.vocab_size, bias=False).to(llm.lm_head.weight.device)
+        self.lm_head = nn.Linear(config.word_embed_proj_dim, config.vocab_size, bias=False).to(
+            llm.lm_head.weight.device)
         self.lm_head.weight = llm.lm_head.weight
         self.lm_head.weight.requires_grad = False
 
@@ -1678,11 +1695,14 @@ class QSTOPTForCausalLM(OPTPreTrainedModel):
             attention_mask: Optional[torch.Tensor] = None,
             head_mask: Optional[torch.Tensor] = None,
             past_key_values: Optional[List[torch.FloatTensor]] = None,
+            qst_past_key_values: Optional[List[torch.FloatTensor]] = None,
             inputs_embeds: Optional[torch.FloatTensor] = None,
             labels: Optional[torch.LongTensor] = None,
             use_cache: Optional[bool] = None,
             output_attentions: Optional[bool] = None,
             output_hidden_states: Optional[bool] = None,
+            output_qst_attentions=False,
+            output_qst_hidden_states=False,
             return_dict: Optional[bool] = None,
     ) -> Union[Tuple, QSTCausalLMOutputWithPast]:
         r"""
@@ -1771,10 +1791,13 @@ class QSTOPTForCausalLM(OPTPreTrainedModel):
             attention_mask=attention_mask,
             head_mask=head_mask,
             past_key_values=past_key_values,
+            qst_past_key_values=qst_past_key_values,
             inputs_embeds=inputs_embeds,
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
+            output_qst_attentions=output_qst_attentions,
+            output_qst_hidden_states=output_qst_hidden_states,
             return_dict=return_dict,
         )
 
@@ -1807,16 +1830,20 @@ class QSTOPTForCausalLM(OPTPreTrainedModel):
             output = (logits,) + outputs[1:]
             return (loss,) + output if loss is not None else output
 
-        return CausalLMOutputWithPast(
+        return QSTCausalLMOutputWithPast(
             loss=loss,
             logits=logits,
             past_key_values=outputs.past_key_values,
+            qst_past_key_values=outputs.qst_past_key_values,
             hidden_states=outputs.hidden_states,
+            qst_hidden_states=outputs.qst_hidden_states,
+            qst_attentions=outputs.qst_attentions,
             attentions=outputs.attentions,
         )
 
     def prepare_inputs_for_generation(
-            self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None, **kwargs
+            self, input_ids, past_key_values=None, attention_mask=None, inputs_embeds=None,
+            **kwargs
     ):
         if past_key_values:
             input_ids = input_ids[:, -1:]
@@ -1829,6 +1856,7 @@ class QSTOPTForCausalLM(OPTPreTrainedModel):
 
         model_inputs.update(
             {
+                "qst_past_key_values": kwargs.get("qst_past_key_values"),
                 "past_key_values": past_key_values,
                 "use_cache": kwargs.get("use_cache"),
                 "attention_mask": attention_mask,
@@ -1996,17 +2024,17 @@ class OPTForSequenceClassification(OPTPreTrainedModel):
 
 
 class QSTOPTForSequenceClassification(OPTPreTrainedModel):
-    def __init__(self, llm:OPTForSequenceClassification, config: OPTConfig, QSTConfig):
+    def __init__(self, llm: OPTForSequenceClassification, config: OPTConfig, QSTConfig):
         super().__init__(config)
         self.num_labels = llm.num_labels
         self.hidden_size = config.hidden_size
         self.qst_hidden_dim = int(config.hidden_size / QSTConfig.r)
 
-        self.model = QSTOPTModel(OPTForSequenceClassification.model, config, QSTConfig,llm.hf_device_map)
+        self.model = QSTOPTModel(OPTForSequenceClassification.model, config, QSTConfig, llm.hf_device_map)
 
-        self.lm_head_z = nn.Parameter(torch.zeros(config.config.hidden_size)).to(llm.score.weight)
-        self.upsample = nn.Linear(self.qst_hidden_dim, config.word_embed_proj_dim).to(llm.score.weight)
-        self.score = nn.Linear(config.word_embed_proj_dim, self.num_labels, bias=False).to(llm.score.weight)
+        self.lm_head_z = nn.Parameter(torch.zeros(config.config.hidden_size)).to(llm.score.weight.device)
+        self.upsample = nn.Linear(self.qst_hidden_dim, config.word_embed_proj_dim).to(llm.score.weight.device)
+        self.score = nn.Linear(config.word_embed_proj_dim, self.num_labels, bias=False).to(llm.score.weight.device)
         self.score.weight = llm.score.weight
         self.score.weight.requires_grad = False
 
@@ -2018,6 +2046,9 @@ class QSTOPTForSequenceClassification(OPTPreTrainedModel):
             self.hf_device_map["score"] = "cuda:" + str(llm.lm_head.weight.device)
             self.hf_device_map["lm_head_z"] = "cuda:" + str(llm.lm_head.weight.device)
             self.hf_device_map["upsample"] = "cuda:" + str(llm.lm_head.weight.device)
+
+        if llm.hf_device_map == {'': 0}:
+            self.hf_device_map = {'': 0}
 
         del llm
 
@@ -2038,11 +2069,14 @@ class QSTOPTForSequenceClassification(OPTPreTrainedModel):
             attention_mask: Optional[torch.FloatTensor] = None,
             head_mask: Optional[torch.FloatTensor] = None,
             past_key_values: Optional[Tuple[Tuple[torch.Tensor]]] = None,
+            qst_past_key_values: Optional[Tuple[Tuple[torch.Tensor]]] = None,
             inputs_embeds: Optional[torch.FloatTensor] = None,
             labels: Optional[torch.LongTensor] = None,
             use_cache: Optional[bool] = None,
             output_attentions: Optional[bool] = None,
             output_hidden_states: Optional[bool] = None,
+            output_qst_attentions: Optional[bool] = None,
+            output_qst_hidden_states: Optional[bool] = None,
             return_dict: Optional[bool] = None,
     ) -> Union[Tuple, SequenceClassifierOutputWithPast]:
         r"""
@@ -2056,12 +2090,15 @@ class QSTOPTForSequenceClassification(OPTPreTrainedModel):
         transformer_outputs = self.model(
             input_ids,
             past_key_values=past_key_values,
+            qst_past_key_values=qst_past_key_values,
             attention_mask=attention_mask,
             head_mask=head_mask,
             inputs_embeds=inputs_embeds,
             use_cache=use_cache,
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
+            output_qst_attentions=output_qst_attentions,
+            output_qst_hidden_states=output_qst_hidden_states,
             return_dict=return_dict,
         )
 
@@ -2123,12 +2160,15 @@ class QSTOPTForSequenceClassification(OPTPreTrainedModel):
             output = (pooled_logits,) + transformer_outputs[1:]
             return ((loss,) + output) if loss is not None else output
 
-        return SequenceClassifierOutputWithPast(
+        return QSTSequenceClassifierOutputWithPast(
             loss=loss,
             logits=pooled_logits,
             past_key_values=transformer_outputs.past_key_values,
+            qst_past_key_values=transformer_outputs.qst_past_key_values,
             hidden_states=transformer_outputs.hidden_states,
             attentions=transformer_outputs.attentions,
+            qst_hidden_states=transformer_outputs.qst_hidden_states,
+            qst_attentions=transformer_outputs.qst_attentions,
         )
 
     def get_input_embeddings(self):
