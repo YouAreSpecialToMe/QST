@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 """ PyTorch OPT model."""
+import copy
 import os
 from copy import deepcopy
 from typing import List, Optional, Tuple, Union
@@ -925,13 +926,14 @@ class QSTOPTDecoder(OPTPreTrainedModel):
             self.final_layer_norm = None
             self.final_layer_norm_qst = None
 
-        config.hidden_size = int(config.hidden_size / QSTConfig.r)
-        config.ffn_dim = int(config.ffn_dim / QSTConfig.r)
+        config_copy_qst = copy.deepcopy(config)
+        config_copy_qst.hidden_size = int(config_copy_qst.hidden_size / QSTConfig.r)
+        config_copy_qst.ffn_dim = int(config_copy_qst.ffn_dim / QSTConfig.r)
 
         # Create qst_layers
         self.qst_layers = nn.ModuleList([
-            OPTDecoderLayer(config)
-            for _ in range(config.num_hidden_layers)
+            OPTDecoderLayer(config_copy_qst)
+            for _ in range(config_copy_qst.num_hidden_layers)
         ])
 
         self.gradient_checkpointing = False
