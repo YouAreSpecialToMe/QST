@@ -19,6 +19,7 @@
 # limitations under the License.
 """ PyTorch LLaMA model."""
 import os
+import copy
 
 import math
 from typing import List, Optional, Tuple, Union
@@ -833,23 +834,24 @@ class QSTLlamaModel(LlamaPreTrainedModel):
             for _ in range(config.num_hidden_layers)
         ])
 
-        config.hidden_size = int(config.hidden_size / QSTConfig.r)
-        config.intermediate_size = int(config.intermediate_size / QSTConfig.r)
+        config_copy_qst = copy.deepcopy(config)
+        config_copy_qst.hidden_size = int(config_copy_qst.hidden_size / QSTConfig.r)
+        config_copy_qst.intermediate_size = int(config_copy_qst.intermediate_size / QSTConfig.r)
 
         # Initialize the parameter z
         self.z = nn.ParameterList([
-            nn.Parameter(torch.ones(config.hidden_size))
-            for _ in range(config.num_hidden_layers)
+            nn.Parameter(torch.ones(config_copy_qst.hidden_size))
+            for _ in range(config_copy_qst.num_hidden_layers)
         ])
 
         # Initialize the qst_layers module
         self.qst_layers = nn.ModuleList([
-            LlamaDecoderLayer(config)
-            for _ in range(config.num_hidden_layers)
+            LlamaDecoderLayer(config_copy_qst)
+            for _ in range(config_copy_qst.num_hidden_layers)
         ])
 
         # Initialize the norm_qst module
-        self.norm_qst = LlamaRMSNorm(config.hidden_size, eps=config.rms_norm_eps)
+        self.norm_qst = LlamaRMSNorm(config_copy_qst.hidden_size, eps=config_copy_qst.rms_norm_eps)
         norm_qst_device = self.get_device(hf_device_map, "model.norm_qst", norm_device)
         self.norm_qst = self.norm_qst.to(norm_qst_device)
         self.hf_device_map["model.norm_qst"] = self.get_device_index(hf_device_map, "model.norm_qst")
