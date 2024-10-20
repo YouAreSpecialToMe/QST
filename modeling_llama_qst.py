@@ -840,7 +840,7 @@ class QSTLlamaModel(LlamaPreTrainedModel):
 
         # Initialize the parameter z
         self.z = nn.ParameterList([
-            nn.Parameter(torch.ones(config_copy_qst.hidden_size))
+            nn.Parameter(torch.full((config_copy_qst.hidden_size,), 0.5))
             for _ in range(config_copy_qst.num_hidden_layers)
         ])
 
@@ -1706,17 +1706,17 @@ class QSTLlamaForSequenceClassification(LlamaPreTrainedModel, QSTGenerationMixin
 
         self.upsample = nn.Linear(int(self.hidden_size / qstconfig.r), self.hidden_size).to(llm.score.weight.device)
 
-        self.lm_head_z = nn.Parameter(torch.Tensor([1.0 for i in range(self.hidden_size)])).to(
+        self.score_z = nn.Parameter(torch.Tensor([1.0 for i in range(self.hidden_size)])).to(
             llm.score.weight.device)
 
         if str(llm.lm_head.weight.device) == 'cpu':
             self.hf_device_map["score"] = 'cpu'
-            self.hf_device_map["lm_head_z"] = 'cpu'
+            self.hf_device_map["score_z"] = 'cpu'
             self.hf_device_map["upsample"] = 'cpu'
         else:
-            self.hf_device_map["score"] = "cuda:" + str(llm.lm_head.weight.device)
-            self.hf_device_map["lm_head_z"] = "cuda:" + str(llm.lm_head.weight.device)
-            self.hf_device_map["upsample"] = "cuda:" + str(llm.lm_head.weight.device)
+            self.hf_device_map["score"] = "cuda:" + str(llm.score.weight.device)
+            self.hf_device_map["score_z"] = "cuda:" + str(llm.score.weight.device)
+            self.hf_device_map["upsample"] = "cuda:" + str(llm.score.weight.device)
 
         if llm.hf_device_map == {'': 0}:
             self.hf_device_map = {'': 0}
