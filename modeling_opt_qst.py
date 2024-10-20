@@ -2040,7 +2040,7 @@ class QSTOPTForSequenceClassification(OPTPreTrainedModel):
         self.score.weight = llm.score.weight
         # self.score.weight.requires_grad = False
 
-        if str(llm.lm_head.weight.device) == 'cpu':
+        if str(llm.score.weight.device) == 'cpu':
             self.hf_device_map["score"] = 'cpu'
             self.hf_device_map["score_z"] = 'cpu'
             self.hf_device_map["upsample"] = 'cpu'
