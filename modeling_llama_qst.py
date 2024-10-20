@@ -1702,7 +1702,7 @@ class QSTLlamaForSequenceClassification(LlamaPreTrainedModel, QSTGenerationMixin
 
         self.score = nn.Linear(self.hidden_size, self.num_labels, bias=False).to(llm.score.weight.device)
         self.score.weight = llm.score.weight
-        self.score.weight.requires_grad = False
+        # self.score.weight.requires_grad = False
 
         self.upsample = nn.Linear(int(self.hidden_size / qstconfig.r), self.hidden_size).to(llm.score.weight.device)
 
