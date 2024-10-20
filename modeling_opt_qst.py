@@ -2038,7 +2038,7 @@ class QSTOPTForSequenceClassification(OPTPreTrainedModel):
         self.upsample = nn.Linear(self.qst_hidden_dim, config.word_embed_proj_dim).to(llm.score.weight.device)
         self.score = nn.Linear(config.word_embed_proj_dim, self.num_labels, bias=False).to(llm.score.weight.device)
         self.score.weight = llm.score.weight
-        self.score.weight.requires_grad = False
+        # self.score.weight.requires_grad = False
 
         if str(llm.lm_head.weight.device) == 'cpu':
             self.hf_device_map["score"] = 'cpu'
