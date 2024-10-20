@@ -2042,12 +2042,12 @@ class QSTOPTForSequenceClassification(OPTPreTrainedModel):
 
         if str(llm.lm_head.weight.device) == 'cpu':
             self.hf_device_map["score"] = 'cpu'
-            self.hf_device_map["lm_head_z"] = 'cpu'
+            self.hf_device_map["score_z"] = 'cpu'
             self.hf_device_map["upsample"] = 'cpu'
         else:
-            self.hf_device_map["score"] = "cuda:" + str(llm.lm_head.weight.device)
-            self.hf_device_map["lm_head_z"] = "cuda:" + str(llm.lm_head.weight.device)
-            self.hf_device_map["upsample"] = "cuda:" + str(llm.lm_head.weight.device)
+            self.hf_device_map["score"] = "cuda:" + str(llm.score.weight.device)
+            self.hf_device_map["score_z"] = "cuda:" + str(llm.score.weight.device)
+            self.hf_device_map["upsample"] = "cuda:" + str(llm.score.weight.device)
 
         if llm.hf_device_map == {'': 0}:
             self.hf_device_map = {'': 0}
@@ -2187,9 +2187,9 @@ class QSTOPTForSequenceClassification(OPTPreTrainedModel):
         qst_upsample_parameters = torch.load(qst_upsample_path)
         self.upsample.load_state_dict(qst_upsample_parameters)
 
-        lm_head_z_path = os.path.join(path, "lm_head_z_parameters.pt")
-        lm_head_z = torch.load(lm_head_z_path)
-        self.lm_head_z = lm_head_z
+        score_z_path = os.path.join(path, "score_z_parameters.pt")
+        score_z = torch.load(score_z_path)
+        self.score_z = score_z
 
     def save_qst_state(self, path):
 
@@ -2198,8 +2198,8 @@ class QSTOPTForSequenceClassification(OPTPreTrainedModel):
         qst_upsample_path = os.path.join(path, "qst_upsample_parameters.pt")
         torch.save(self.upsample.state_dict(), qst_upsample_path)
 
-        lm_head_z_path = os.path.join(path, "lm_head_z_parameters.pt")
-        torch.save(self.lm_head_z, lm_head_z_path)
+        score_z_path = os.path.join(path, "score_z_parameters.pt")
+        torch.save(self.lm_head_z, score_z_path)
 
 
 @add_start_docstrings(
