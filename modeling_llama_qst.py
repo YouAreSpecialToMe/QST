@@ -1699,6 +1699,7 @@ class QSTLlamaForSequenceClassification(LlamaPreTrainedModel, QSTGenerationMixin
         self.config = llm.config
 
         self.model = QSTLlamaModel(llm.model, config, qstconfig, llm.hf_device_map)
+        self.hf_device_map = self.model.hf_device_map
 
         self.score = nn.Linear(self.hidden_size, self.num_labels, bias=False).to(llm.score.weight.device)
         self.score.weight = llm.score.weight
