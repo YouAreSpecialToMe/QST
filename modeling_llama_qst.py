@@ -1848,6 +1848,10 @@ class QSTLlamaForSequenceClassification(LlamaPreTrainedModel, QSTGenerationMixin
         qst_upsample_parameters = torch.load(qst_upsample_path)
         self.upsample.load_state_dict(qst_upsample_parameters)
 
+        qst_score_path = os.path.join(path, "qst_score_parameters.pt")
+        qst_score_parameters = torch.load(qst_score_path)
+        self.upsample.load_state_dict(qst_score_parameters)
+
         score_z_path = os.path.join(path, "score_z_path.pt")
         self.score_z = torch.load(score_z_path)
 
@@ -1857,6 +1861,9 @@ class QSTLlamaForSequenceClassification(LlamaPreTrainedModel, QSTGenerationMixin
 
         qst_upsample_path = os.path.join(path, "qst_upsample_parameters.pt")
         torch.save(self.upsample.state_dict(), qst_upsample_path)
+
+        qst_score_path = os.path.join(path, "qst_score_parameters.pt")
+        torch.save(self.score.state_dict(), qst_score_path)
 
         score_z_path = os.path.join(path, "score_z_path.pt")
         torch.save(score_z_path)
