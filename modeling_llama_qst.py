@@ -1709,7 +1709,7 @@ class QSTLlamaForSequenceClassification(LlamaPreTrainedModel, QSTGenerationMixin
         self.score_z = nn.Parameter(torch.Tensor([1.0 for i in range(self.hidden_size)])).to(
             llm.score.weight.device)
 
-        if str(llm.lm_head.weight.device) == 'cpu':
+        if str(llm.score.weight.device) == 'cpu':
             self.hf_device_map["score"] = 'cpu'
             self.hf_device_map["score_z"] = 'cpu'
             self.hf_device_map["upsample"] = 'cpu'
