@@ -7,9 +7,11 @@ import time
 from datasets import load_dataset, load_metric
 import numpy as np
 import torch
+import transformers
 from transformers import AutoTokenizer, TrainingArguments, BitsAndBytesConfig, \
-    Trainer, AutoConfig, DataCollatorWithPadding, TrainerCallback
+    Trainer, AutoConfig, DataCollatorWithPadding
 from QSTConfig import QSTConfig
+from typing import Dict
 from modeling_llama_qst import QSTLlamaForSequenceClassification, LlamaForSequenceClassification
 
 import warnings
@@ -29,6 +31,28 @@ torch.backends.cuda.matmul.allow_tf32 = True
 #     def on_step_end(self, args, state, control, **kwargs):
 #         initial_memory = GPUtil.getGPUs()[0].memoryUsed
 #         self.memory_allocated.append(initial_memory)
+
+def smart_tokenizer_and_embedding_resize(
+        special_tokens_dict: Dict,
+        tokenizer: transformers.PreTrainedTokenizer,
+        model: transformers.PreTrainedModel,
+):
+    """Resize tokenizer and embedding.
+
+    Note: This is the unoptimized version that may make your embedding size not be divisible by 64.
+    """
+    num_new_tokens = tokenizer.add_special_tokens(special_tokens_dict)
+    model.resize_token_embeddings(len(tokenizer))
+
+    if num_new_tokens > 0:
+        input_embeddings_data = model.get_input_embeddings().weight.data
+        output_embeddings_data = model.get_output_embeddings().weight.data
+
+        input_embeddings_avg = input_embeddings_data[:-num_new_tokens].mean(dim=0, keepdim=True)
+        output_embeddings_avg = output_embeddings_data[:-num_new_tokens].mean(dim=0, keepdim=True)
+
+        input_embeddings_data[-num_new_tokens:] = input_embeddings_avg
+        output_embeddings_data[-num_new_tokens:] = output_embeddings_avg
 
 
 def print_trainable_parameters(args, model):
@@ -65,6 +89,7 @@ task_to_keys = {
 }
 
 GLUE_TASKS = ["cola", "mnli", "mrpc", "qnli", "qqp", "rte", "sst2", "stsb"]
+DEFAULT_PAD_TOKEN = "[PAD]"
 
 
 def train(task, parameters):
@@ -85,10 +110,25 @@ def train(task, parameters):
 
     tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, use_fast=True, max_length=max_len)
 
-    print('Adding special tokens.')
-    tokenizer.add_special_tokens({
-        "pad_token": '[PAD]',
-    })
+    num_labels = 3 if task.startswith("mnli") else 1 if task == "stsb" else 2
+
+    quant_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.bfloat16
+    )
+
+    LLM = LlamaForSequenceClassification.from_pretrained(model_checkpoint, load_in_4bit=True,
+                                                         quantization_config=quant_config, torch_dtype=torch.float32,
+                                                         num_labels=num_labels)
+
+    if tokenizer._pad_token is None:
+        smart_tokenizer_and_embedding_resize(
+            special_tokens_dict=dict(pad_token=DEFAULT_PAD_TOKEN),
+            tokenizer=tokenizer,
+            model=LLM,
+        )
 
     sentence1_key, sentence2_key = task_to_keys[task]
 
@@ -99,17 +139,12 @@ def train(task, parameters):
 
     encoded_dataset = dataset.map(preprocess_function, batched=True)
 
-    num_labels = 3 if task.startswith("mnli") else 1 if task == "stsb" else 2
 
-    config = AutoConfig.from_pretrained(model_checkpoint)
-    # config.hidden_size = 64  # 确保 hidden_size 的值在这里被正确设置
 
-    quant_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_use_double_quant=True,
-        bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.bfloat16
-    )
+    # config = AutoConfig.from_pretrained(model_checkpoint)
+    # config.hidden_size = 64
+
+
 
     validation_key = "validation_mismatched" if task == "mnli-mm" else "validation_matched" if task == "mnli" else "validation"
     num_samples = len(encoded_dataset[validation_key])
@@ -119,9 +154,7 @@ def train(task, parameters):
     encoded_dataset[validation_key] = encoded_dataset[validation_key].select(range(valid_samples))
 
     config = AutoConfig.from_pretrained(model_checkpoint)
-    LLM = LlamaForSequenceClassification.from_pretrained(model_checkpoint, load_in_4bit=True,
-                                                         quantization_config=quant_config, torch_dtype=torch.float32,
-                                                         num_labels=num_labels)
+
 
     LLM.config.torch_dtype = torch.float32
 
@@ -208,7 +241,7 @@ def train(task, parameters):
     end_time = time.time()
     results = trainer.evaluate()
 
-    return results, trainer.state.log_history, (end_time - start_time), max(memory_callback.memory_allocated)
+    return results, trainer.state.log_history, (end_time - start_time)
 
 
 if __name__ == "__main__":
