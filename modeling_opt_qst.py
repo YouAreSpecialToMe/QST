@@ -2035,7 +2035,7 @@ class QSTOPTForSequenceClassification(OPTPreTrainedModel):
         self.model = QSTOPTModel(OPTForSequenceClassification.model, config, QSTConfig, llm.hf_device_map)
         self.hf_device_map = self.model.hf_device_map
 
-        self.lm_head_z = nn.Parameter(torch.zeros(config.config.hidden_size)).to(llm.score.weight.device)
+        self.score_z = nn.Parameter(torch.zeros(config.config.hidden_size)).to(llm.score.weight.device)
         self.upsample = nn.Linear(self.qst_hidden_dim, config.word_embed_proj_dim).to(llm.score.weight.device)
         self.score = nn.Linear(config.word_embed_proj_dim, self.num_labels, bias=False).to(llm.score.weight.device)
         self.score.weight = llm.score.weight
@@ -2113,8 +2113,8 @@ class QSTOPTForSequenceClassification(OPTPreTrainedModel):
             qst_hidden_states = transformer_outputs.last_qst_hidden_states
 
         qst_hidden_states = self.upsample(qst_hidden_states)
-        lm_head_z = torch.sigmoid(self.lm_head_z)
-        final_hidden_states = lm_head_z * qst_hidden_states + (1 - lm_head_z) * hidden_states
+        score_z = torch.sigmoid(self.score_z)
+        final_hidden_states = score_z * qst_hidden_states + (1 - score_z) * hidden_states
 
         logits = self.score(final_hidden_states)
 
@@ -2207,7 +2207,7 @@ class QSTOPTForSequenceClassification(OPTPreTrainedModel):
         torch.save(self.score.state_dict(), qst_score_path)
 
         score_z_path = os.path.join(path, "score_z_parameters.pt")
-        torch.save(self.lm_head_z, score_z_path)
+        torch.save(self.score_z, score_z_path)
 
 
 @add_start_docstrings(
