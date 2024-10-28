@@ -1466,7 +1466,7 @@ class QSTLlamaForCausalLM(QSTGenerationMixin, LlamaPreTrainedModel):
             qst_hidden_states = outputs.last_qst_hidden_states
 
         # hidden_states = outputs[0]
-        lm_head_z = torch.sigmoid(self.lm_head_z)
+        lm_head_z = torch.sigmoid(self.lm_head_z).to(self.lm_head.weight.device)
         qst_hidden_states = (1 - lm_head_z) * self.upsample(qst_hidden_states) + lm_head_z * hidden_states
         # logits = self.score(qst_hidden_states)
 
