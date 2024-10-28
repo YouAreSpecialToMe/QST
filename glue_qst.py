@@ -4,12 +4,13 @@ import pickle
 import time
 
 # import GPUtil
-from datasets import load_dataset, load_metric
+from datasets import load_dataset
+from evaluate import load
 import numpy as np
 import torch
 import transformers
 from transformers import AutoTokenizer, TrainingArguments, BitsAndBytesConfig, \
-    Trainer, AutoConfig, DataCollatorWithPadding
+    Trainer, AutoConfig, DataCollatorWithPadding,AutoModelForSequenceClassification
 from QSTConfig import QSTConfig
 from typing import Dict
 from modeling_llama_qst import QSTLlamaForSequenceClassification, LlamaForSequenceClassification
@@ -46,13 +47,13 @@ def smart_tokenizer_and_embedding_resize(
 
     if num_new_tokens > 0:
         input_embeddings_data = model.get_input_embeddings().weight.data
-        output_embeddings_data = model.get_output_embeddings().weight.data
+        # output_embeddings_data = model.get_output_embeddings().weight.data
 
         input_embeddings_avg = input_embeddings_data[:-num_new_tokens].mean(dim=0, keepdim=True)
-        output_embeddings_avg = output_embeddings_data[:-num_new_tokens].mean(dim=0, keepdim=True)
+        # output_embeddings_avg = output_embeddings_data[:-num_new_tokens].mean(dim=0, keepdim=True)
 
         input_embeddings_data[-num_new_tokens:] = input_embeddings_avg
-        output_embeddings_data[-num_new_tokens:] = output_embeddings_avg
+        # output_embeddings_data[-num_new_tokens:] = output_embeddings_avg
 
 
 def print_trainable_parameters(args, model):
@@ -106,7 +107,7 @@ def train(task, parameters):
 
     print(f"Loading dataset for task: {actual_task}")
     dataset = load_dataset("glue", task)
-    metric = load_metric('glue', task)
+    metric = load('glue', task)
 
     tokenizer = AutoTokenizer.from_pretrained(model_checkpoint, use_fast=True, max_length=max_len)
 
@@ -119,16 +120,17 @@ def train(task, parameters):
         bnb_4bit_compute_dtype=torch.bfloat16
     )
 
-    LLM = LlamaForSequenceClassification.from_pretrained(model_checkpoint, load_in_4bit=True,
-                                                         quantization_config=quant_config, torch_dtype=torch.float32,
-                                                         num_labels=num_labels)
+    LLM = AutoModelForSequenceClassification.from_pretrained(model_checkpoint, load_in_4bit=True,
+                                                         quantization_config=quant_config, torch_dtype=torch.bfloat16,
+                                                         num_labels=num_labels,device_map="auto")
 
     if tokenizer._pad_token is None:
-        smart_tokenizer_and_embedding_resize(
-            special_tokens_dict=dict(pad_token=DEFAULT_PAD_TOKEN),
-            tokenizer=tokenizer,
-            model=LLM,
-        )
+        # smart_tokenizer_and_embedding_resize(
+        #     special_tokens_dict=dict(pad_token=DEFAULT_PAD_TOKEN),
+        #     tokenizer=tokenizer,
+        #     model=LLM,
+        # )
+        tokenizer.pad_token = tokenizer.eos_token
 
     sentence1_key, sentence2_key = task_to_keys[task]
 
@@ -154,7 +156,7 @@ def train(task, parameters):
     encoded_dataset[validation_key] = encoded_dataset[validation_key].select(range(valid_samples))
 
     config = AutoConfig.from_pretrained(model_checkpoint)
-
+    config.pad_token_id = config.eos_token_id
 
     LLM.config.torch_dtype = torch.float32
 
@@ -170,7 +172,7 @@ def train(task, parameters):
     )
 
     model = QSTLlamaForSequenceClassification(LLM, config, qst_config)
-
+    model.config.pad_token_id = tokenizer.pad_token_id
     # LLaMA tokenizer may not have correct special tokens set.
     # Check and add them if missing to prevent them from being parsed into different tokens.
     # Note that these are present in the vocabulary.
@@ -278,7 +280,7 @@ if __name__ == "__main__":
             continue
 
         result_dict[task] = {}
-        result, log, train_time, memory_usage = train(task, parameters)
+        result, log, train_time = train(task, parameters)
 
         values = []
         for elem in log:
@@ -294,9 +296,9 @@ if __name__ == "__main__":
         best_acc = max(values)
         result_dict[task]["acc"] = best_acc
         result_dict[task]["time"] = train_time
-        result_dict[task]["memory_usage"] = memory_usage
+        # result_dict[task]["memory_usage"] = memory_usage
 
-        print(f"Task:{task}: Best acc {best_acc}, Total training time {train_time}, Memory usage {memory_usage}")
+        print(f"Task:{task}: Best acc {best_acc}, Total training time {train_time}")
 
     model_name = os.path.basename(parameters["model_checkpoint"])
     with open(f"glue_qst_{task}_{model_name}_{args.batch_size}.pickle", 'wb') as f:
