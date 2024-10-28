@@ -1780,7 +1780,7 @@ class QSTLlamaForSequenceClassification(LlamaPreTrainedModel, QSTGenerationMixin
             qst_hidden_states = transformer_outputs.last_qst_hidden_states
 
         qst_hidden_states = self.upsample(qst_hidden_states)
-        qst_hidden_states = (1 - self.lm_head_z) * self.upsample(qst_hidden_states) + self.lm_head_z * hidden_states
+        qst_hidden_states = (1 - self.score_z) * self.upsample(qst_hidden_states) + self.score_z * hidden_states
         logits = self.score(qst_hidden_states)
 
         if input_ids is not None:
