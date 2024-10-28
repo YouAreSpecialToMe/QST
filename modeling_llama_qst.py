@@ -1779,9 +1779,9 @@ class QSTLlamaForSequenceClassification(LlamaPreTrainedModel, QSTGenerationMixin
             hidden_states = transformer_outputs.last_hidden_states
             qst_hidden_states = transformer_outputs.last_qst_hidden_states
 
-        qst_hidden_states = self.upsample(qst_hidden_states)
-        qst_hidden_states = (1 - self.score_z) * self.upsample(qst_hidden_states) + self.score_z * hidden_states
-        logits = self.score(qst_hidden_states)
+        score_z = torch.sigmoid(self.score_z).to(self.score.weight.device)
+        final_hidden_states = (1 - score_z) * self.upsample(qst_hidden_states) + score_z * hidden_states
+        logits = self.score(final_hidden_states)
 
         if input_ids is not None:
             batch_size = input_ids.shape[0]
@@ -1825,6 +1825,7 @@ class QSTLlamaForSequenceClassification(LlamaPreTrainedModel, QSTGenerationMixin
             elif self.config.problem_type == "multi_label_classification":
                 loss_fct = BCEWithLogitsLoss()
                 loss = loss_fct(pooled_logits, labels)
+            loss = loss.to('cuda:0')
         if not return_dict:
             output = (pooled_logits,) + transformer_outputs[1:]
             return ((loss,) + output) if loss is not None else output
