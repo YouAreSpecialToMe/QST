@@ -17,7 +17,7 @@ cmake==3.26.3
 contextlib2==21.6.0
 contourpy==1.1.0
 cycler==0.11.0
-datasets==2.12.0
+datasets==3.0.2
 decorator==5.1.1
 dill==0.3.6
 docker-pycreds==0.4.0
