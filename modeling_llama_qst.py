@@ -1691,7 +1691,7 @@ class LlamaForSequenceClassification(LlamaPreTrainedModel):
         )
 
 
-class QSTLlamaForSequenceClassification(LlamaPreTrainedModel, QSTGenerationMixin):
+class QSTLlamaForSequenceClassification(LlamaPreTrainedModel):
     def __init__(self, llm: LlamaForSequenceClassification, config: LlamaConfig, qstconfig):
         super().__init__(config)
         self.num_labels = llm.num_labels
@@ -1830,15 +1830,23 @@ class QSTLlamaForSequenceClassification(LlamaPreTrainedModel, QSTGenerationMixin
             output = (pooled_logits,) + transformer_outputs[1:]
             return ((loss,) + output) if loss is not None else output
 
-        return QSTSequenceClassifierOutputWithPast(
+        # return QSTSequenceClassifierOutputWithPast(
+        #     loss=loss,
+        #     logits=pooled_logits,
+        #     past_key_values=transformer_outputs.past_key_values,
+        #     qst_past_key_values=transformer_outputs.qst_past_key_values,
+        #     hidden_states=transformer_outputs.hidden_states,
+        #     attentions=transformer_outputs.attentions,
+        #     qst_hidden_states=transformer_outputs.qst_hidden_states,
+        #     qst_attentions=transformer_outputs.qst_attentions,
+        # )
+
+        return SequenceClassifierOutputWithPast(
             loss=loss,
             logits=pooled_logits,
             past_key_values=transformer_outputs.past_key_values,
-            qst_past_key_values=transformer_outputs.qst_past_key_values,
             hidden_states=transformer_outputs.hidden_states,
             attentions=transformer_outputs.attentions,
-            qst_hidden_states=transformer_outputs.qst_hidden_states,
-            qst_attentions=transformer_outputs.qst_attentions,
         )
 
     def load_qst_state(self, path):
