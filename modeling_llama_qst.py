@@ -852,9 +852,9 @@ class QSTLlamaModel(LlamaPreTrainedModel):
 
         # Initialize the norm_qst module
         self.norm_qst = LlamaRMSNorm(config_copy_qst.hidden_size, eps=config_copy_qst.rms_norm_eps)
-        norm_qst_device = self.get_device(hf_device_map, "model.norm_qst", norm_device)
+        norm_qst_device = self.get_device(hf_device_map, "model.norm", norm_device)
         self.norm_qst = self.norm_qst.to(norm_qst_device)
-        self.hf_device_map["model.norm_qst"] = self.get_device_index(hf_device_map, "model.norm_qst")
+        self.hf_device_map["model.norm_qst"] = self.get_device_index(hf_device_map, "model.norm")
 
         # Set up the device for each layer
         for i in range(config.num_hidden_layers):
@@ -1362,9 +1362,9 @@ class QSTLlamaForCausalLM(QSTGenerationMixin, LlamaPreTrainedModel):
             self.hf_device_map["lm_head_z"] = 'cpu'
             self.hf_device_map["upsample"] = 'cpu'
         else:
-            self.hf_device_map["lm_head"] = "cuda:" + str(llm.lm_head.weight.device)
-            self.hf_device_map["lm_head_z"] = "cuda:" + str(llm.lm_head.weight.device)
-            self.hf_device_map["upsample"] = "cuda:" + str(llm.lm_head.weight.device)
+            self.hf_device_map["lm_head"] = int(str(llm.lm_head.weight.device)[-1])
+            self.hf_device_map["lm_head_z"] = int(str(llm.lm_head.weight.device)[-1])
+            self.hf_device_map["upsample"] = int(str(llm.lm_head.weight.device)[-1])
 
         if llm.hf_device_map == {'': 0}:
             self.hf_device_map = {'': 0}
@@ -1715,9 +1715,9 @@ class QSTLlamaForSequenceClassification(LlamaPreTrainedModel):
             self.hf_device_map["score_z"] = 'cpu'
             self.hf_device_map["upsample"] = 'cpu'
         else:
-            self.hf_device_map["score"] = "cuda:" + str(llm.score.weight.device)
-            self.hf_device_map["score_z"] = "cuda:" + str(llm.score.weight.device)
-            self.hf_device_map["upsample"] = "cuda:" + str(llm.score.weight.device)
+            self.hf_device_map["score"] = int(str(llm.score.weight.device)[-1])
+            self.hf_device_map["score_z"] = int(str(llm.score.weight.device)[-1])
+            self.hf_device_map["upsample"] = int(str(llm.score.weight.device)[-1])
 
         if llm.hf_device_map == {'': 0}:
             self.hf_device_map = {'': 0}
