@@ -834,9 +834,9 @@ class QSTOPTDecoder(OPTPreTrainedModel):
         self.embed_tokens.weight.requires_grad = False
 
         # Get device for embed_tokens
-        embed_tokens_device = get_device(hf_device_map, "model.embed_tokens", default_device)
+        embed_tokens_device = get_device(hf_device_map, "model.decoder.embed_tokens", default_device)
         self.embed_tokens = self.embed_tokens.to(embed_tokens_device)
-        self.hf_device_map["model.embed_tokens"] = get_device_index(hf_device_map, "model.embed_tokens")
+        self.hf_device_map["model.decoder.embed_tokens"] = get_device_index(hf_device_map, "model.decoder.embed_tokens")
 
         # Handle embed_positions
         self.embed_positions = OPTLearnedPositionalEmbedding(config.max_position_embeddings, config.hidden_size)
@@ -844,9 +844,10 @@ class QSTOPTDecoder(OPTPreTrainedModel):
         self.embed_positions.weight.requires_grad = False
 
         # Get device for embed_positions
-        embed_positions_device = get_device(hf_device_map, "model.embed_positions", default_device)
+        embed_positions_device = get_device(hf_device_map, "model.decoder.embed_positions", default_device)
         self.embed_positions = self.embed_positions.to(embed_positions_device)
-        self.hf_device_map["model.embed_positions"] = get_device_index(hf_device_map, "model.embed_positions")
+        self.hf_device_map["model.decoder.embed_positions"] = get_device_index(hf_device_map,
+                                                                               "model.decoder.embed_positions")
 
         # Handle backbone (decoder layers)
         self.backbone = llm.layers
@@ -867,21 +868,26 @@ class QSTOPTDecoder(OPTPreTrainedModel):
             for _ in range(config.num_hidden_layers)
         ])
 
+        config_copy_qst = copy.deepcopy(config)
+        config_copy_qst.hidden_size = int(config_copy_qst.hidden_size / QSTConfig.r)
+        config_copy_qst.ffn_dim = int(config_copy_qst.ffn_dim / QSTConfig.r)
+
         # Create parameter z
         self.z = nn.ParameterList([
-            nn.Parameter(torch.ones(config.hidden_size))
-            for _ in range(config.num_hidden_layers)
+            nn.Parameter(torch.full((config_copy_qst.hidden_size,), 0.5))
+            for _ in range(config_copy_qst.num_hidden_layers)
         ])
 
         # Handle project_out
         if config.word_embed_proj_dim != config.hidden_size:
-            project_out_device = get_device(hf_device_map, "model.project_out", default_device)
+            project_out_device = get_device(hf_device_map, "model.decoder.project_out", default_device)
             if isinstance(llm.project_out, nn.Linear):
                 self.project_out = nn.Linear(config.hidden_size, config.word_embed_proj_dim, bias=False)
                 self.project_out.weight = llm.project_out.weight
                 self.project_out.weight.requires_grad = False
                 self.project_out = self.project_out.to(project_out_device)
-                self.hf_device_map["model.project_out"] = get_device_index(hf_device_map, "model.project_out")
+                self.hf_device_map["model.decoder.project_out"] = get_device_index(hf_device_map,
+                                                                                   "model.decoder.project_out")
             else:
                 # Handle other possible types if necessary
                 raise NotImplementedError
@@ -890,13 +896,14 @@ class QSTOPTDecoder(OPTPreTrainedModel):
 
         # Handle project_in
         if config.word_embed_proj_dim != config.hidden_size:
-            project_in_device = get_device(hf_device_map, "model.project_in", default_device)
+            project_in_device = get_device(hf_device_map, "model.decoder.project_in", default_device)
             if isinstance(llm.project_in, nn.Linear):
                 self.project_in = nn.Linear(config.word_embed_proj_dim, config.hidden_size, bias=False)
                 self.project_in.weight = llm.project_in.weight
                 self.project_in.weight.requires_grad = False
                 self.project_in = self.project_in.to(project_in_device)
-                self.hf_device_map["model.project_in"] = get_device_index(hf_device_map, "model.project_in")
+                self.hf_device_map["model.decoder.project_in"] = get_device_index(hf_device_map,
+                                                                                  "model.decoder.project_in")
             else:
                 # Handle other possible types if necessary
                 raise NotImplementedError
@@ -905,7 +912,7 @@ class QSTOPTDecoder(OPTPreTrainedModel):
 
         # Handle final_layer_norm and final_layer_norm_qst
         if config.do_layer_norm_before and not config._remove_final_layer_norm:
-            final_layer_norm_device = get_device(hf_device_map, "model.final_layer_norm", default_device)
+            final_layer_norm_device = get_device(hf_device_map, "model.decoder.final_layer_norm", default_device)
             self.final_layer_norm = nn.LayerNorm(
                 config.hidden_size, elementwise_affine=config.layer_norm_elementwise_affine
             )
@@ -914,21 +921,18 @@ class QSTOPTDecoder(OPTPreTrainedModel):
             self.final_layer_norm.weight.requires_grad = False
             self.final_layer_norm.bias.requires_grad = False
             self.final_layer_norm = self.final_layer_norm.to(final_layer_norm_device)
-            self.hf_device_map["model.final_layer_norm"] = get_device_index(hf_device_map, "model.final_layer_norm")
+            self.hf_device_map["model.decoder.final_layer_norm"] = get_device_index(hf_device_map,
+                                                                                    "model.decoder.final_layer_norm")
 
             self.final_layer_norm_qst = nn.LayerNorm(
                 int(config.hidden_size / QSTConfig.r), elementwise_affine=config.layer_norm_elementwise_affine
             )
             self.final_layer_norm_qst = self.final_layer_norm_qst.to(final_layer_norm_device)
-            self.hf_device_map["model.final_layer_norm_qst"] = get_device_index(hf_device_map,
-                                                                                "model.final_layer_norm_qst")
+            self.hf_device_map["model.decoder.final_layer_norm_qst"] = get_device_index(hf_device_map,
+                                                                                        "model.decoder.final_layer_norm")
         else:
             self.final_layer_norm = None
             self.final_layer_norm_qst = None
-
-        config_copy_qst = copy.deepcopy(config)
-        config_copy_qst.hidden_size = int(config_copy_qst.hidden_size / QSTConfig.r)
-        config_copy_qst.ffn_dim = int(config_copy_qst.ffn_dim / QSTConfig.r)
 
         # Create qst_layers
         self.qst_layers = nn.ModuleList([
@@ -940,25 +944,25 @@ class QSTOPTDecoder(OPTPreTrainedModel):
 
         # Handle device mapping for each layer
         for i in range(config.num_hidden_layers):
-            layer_key = f"model.layers.{i}"
+            layer_key = f"model.decoder.layers.{i}"
             layer_device = get_device(hf_device_map, layer_key, default_device)
             layer_device_index = get_device_index(hf_device_map, layer_key)
 
             # Move backbone layer to the appropriate device
             self.backbone[i] = self.backbone[i].to(layer_device)
-            self.hf_device_map[f"model.backbone.{i}"] = layer_device_index
+            self.hf_device_map[f"model.decoder.backbone.{i}"] = layer_device_index
 
             # Move z parameter to the appropriate device
             self.z[i] = self.z[i].to(layer_device)
-            self.hf_device_map[f"model.z.{i}"] = layer_device_index
+            self.hf_device_map[f"model.decoder.z.{i}"] = layer_device_index
 
             # Move qst_layers to the appropriate device
             self.qst_layers[i] = self.qst_layers[i].to(layer_device)
-            self.hf_device_map[f"model.qst_layers.{i}"] = layer_device_index
+            self.hf_device_map[f"model.decoder.qst_layers.{i}"] = layer_device_index
 
             # Move downsample to the appropriate device
             self.downsample[i] = self.downsample[i].to(layer_device)
-            self.hf_device_map[f"model.downsample.{i}"] = layer_device_index
+            self.hf_device_map[f"model.decoder.downsample.{i}"] = layer_device_index
 
     # Copied from transformers.models.bart.modeling_bart.BartDecoder._prepare_decoder_attention_mask
     def _prepare_decoder_attention_mask(self, attention_mask, input_shape, inputs_embeds, past_key_values_length):
@@ -1129,14 +1133,14 @@ class QSTOPTDecoder(OPTPreTrainedModel):
         # check if head_mask has a correct number of layers specified if desired
         for attn_mask, mask_name in zip([head_mask], ["head_mask"]):
             if attn_mask is not None:
-                if attn_mask.size()[0] != (len(self.blackbone)):
+                if attn_mask.size()[0] != (len(self.backbone)):
                     raise ValueError(
-                        f"The `{mask_name}` should be specified for {len(self.blackbone)} layers, but it is for"
+                        f"The `{mask_name}` should be specified for {len(self.backbone)} layers, but it is for"
                         f" {head_mask.size()[0]}."
                     )
 
         qst_hidden_states = self.downsample[0](hidden_states)
-        for idx, decoder_layer in enumerate(self.blackbone):
+        for idx, decoder_layer in enumerate(self.backbone):
 
             # add LayerDrop (see https://arxiv.org/abs/1909.11556 for description)
             if output_hidden_states:
@@ -1186,14 +1190,15 @@ class QSTOPTDecoder(OPTPreTrainedModel):
                         output_attentions=output_attentions,
                         use_cache=use_cache,
                     )
-                # hidden_states = layer_outputs[0].to(decoder_layer.fc1.weight.device)
-
+                hidden_states = layer_outputs[0]
                 z = torch.sigmoid(self.z[idx])
-                qst_hidden_states = (1 - z) * self.downsample[idx](hidden_states) + z * qst_hidden_states
+                qst_hidden_states = qst_hidden_states.to(hidden_states.device)
+                qst_hidden_states = (1 - z) * self.downsample[idx](
+                    hidden_states) + z * qst_hidden_states
 
                 qst_layer_outputs = self.qst_layers[idx](
                     qst_hidden_states,
-                    attention_mask=causal_attention_mask,
+                    attention_mask=causal_attention_mask.to(qst_hidden_states.device),
                     layer_head_mask=(head_mask[idx] if head_mask is not None else None),
                     past_key_value=qst_past_key_value,
                     output_attentions=output_attentions,
@@ -1213,13 +1218,13 @@ class QSTOPTDecoder(OPTPreTrainedModel):
 
         with torch.no_grad():
             if self.final_layer_norm is not None:
-                hidden_states = self.final_layer_norm(hidden_states)
+                hidden_states = self.final_layer_norm(hidden_states.to(self.final_layer_norm.weight.device))
 
             if self.project_out is not None:
                 hidden_states = self.project_out(hidden_states)
 
         if self.final_layer_norm_qst is not None:
-            qst_hidden_states = self.final_layer_norm_qst(qst_hidden_states)
+            qst_hidden_states = self.final_layer_norm_qst(qst_hidden_states.to(self.final_layer_norm.weight.device))
 
         # add hidden states from the last decoder layer
         if output_hidden_states:
@@ -1645,6 +1650,7 @@ class QSTOPTForCausalLM(OPTPreTrainedModel, QSTGenerationMixin):
         self.qst_hidden_dim = int(config.hidden_size / QSTConfig.r)
 
         self.model = QSTOPTModel(llm.model, config, QSTConfig, llm.hf_device_map)
+        self.hf_device_map = self.model.decoder.hf_device_map
 
         # the lm_head weight is automatically tied to the embed tokens weight
         self.lm_head_z = nn.Parameter(torch.Tensor([1.0 for i in range(self.hidden_size)])).to(
@@ -1663,9 +1669,11 @@ class QSTOPTForCausalLM(OPTPreTrainedModel, QSTGenerationMixin):
             self.hf_device_map["lm_head_z"] = 'cpu'
             self.hf_device_map["upsample"] = 'cpu'
         else:
-            self.hf_device_map["lm_head"] = "cuda:" + str(llm.lm_head.weight.device)
-            self.hf_device_map["lm_head_z"] = "cuda:" + str(llm.lm_head.weight.device)
-            self.hf_device_map["upsample"] = "cuda:" + str(llm.lm_head.weight.device)
+            self.hf_device_map["lm_head"] = int(str(llm.lm_head.weight.device)[-1])
+            self.hf_device_map["lm_head_z"] = int(str(llm.lm_head.weight.device)[-1])
+            self.hf_device_map["upsample"] = int(str(llm.lm_head.weight.device)[-1])
+
+        print(self.hf_device_map, flush=True)
 
         if llm.hf_device_map == {'': 0}:
             self.hf_device_map = {'': 0}
@@ -2033,7 +2041,7 @@ class QSTOPTForSequenceClassification(OPTPreTrainedModel):
         self.qst_hidden_dim = int(config.hidden_size / QSTConfig.r)
 
         self.model = QSTOPTModel(OPTForSequenceClassification.model, config, QSTConfig, llm.hf_device_map)
-        self.hf_device_map = self.model.hf_device_map
+        self.hf_device_map = self.model.decoder.hf_device_map
 
         self.score_z = nn.Parameter(torch.zeros(config.config.hidden_size)).to(llm.score.weight.device)
         self.upsample = nn.Linear(self.qst_hidden_dim, config.word_embed_proj_dim).to(llm.score.weight.device)
@@ -2046,9 +2054,9 @@ class QSTOPTForSequenceClassification(OPTPreTrainedModel):
             self.hf_device_map["score_z"] = 'cpu'
             self.hf_device_map["upsample"] = 'cpu'
         else:
-            self.hf_device_map["score"] = "cuda:" + str(llm.score.weight.device)
-            self.hf_device_map["score_z"] = "cuda:" + str(llm.score.weight.device)
-            self.hf_device_map["upsample"] = "cuda:" + str(llm.score.weight.device)
+            self.hf_device_map["score"] = int(str(llm.score.weight.device)[-1])
+            self.hf_device_map["score_z"] = int(str(llm.score.weight.device)[-1])
+            self.hf_device_map["upsample"] = int(str(llm.score.weight.device)[-1])
 
         if llm.hf_device_map == {'': 0}:
             self.hf_device_map = {'': 0}
@@ -2163,15 +2171,12 @@ class QSTOPTForSequenceClassification(OPTPreTrainedModel):
             output = (pooled_logits,) + transformer_outputs[1:]
             return ((loss,) + output) if loss is not None else output
 
-        return QSTSequenceClassifierOutputWithPast(
+        return SequenceClassifierOutputWithPast(
             loss=loss,
             logits=pooled_logits,
             past_key_values=transformer_outputs.past_key_values,
-            qst_past_key_values=transformer_outputs.qst_past_key_values,
             hidden_states=transformer_outputs.hidden_states,
             attentions=transformer_outputs.attentions,
-            qst_hidden_states=transformer_outputs.qst_hidden_states,
-            qst_attentions=transformer_outputs.qst_attentions,
         )
 
     def get_input_embeddings(self):
@@ -2207,7 +2212,7 @@ class QSTOPTForSequenceClassification(OPTPreTrainedModel):
         torch.save(self.score.state_dict(), qst_score_path)
 
         score_z_path = os.path.join(path, "score_z_parameters.pt")
-        torch.save(self.score_z, score_z_path)
+        torch.save(self.lm_head_z, score_z_path)
 
 
 @add_start_docstrings(
