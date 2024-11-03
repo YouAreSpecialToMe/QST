@@ -1673,8 +1673,6 @@ class QSTOPTForCausalLM(OPTPreTrainedModel, QSTGenerationMixin):
             self.hf_device_map["lm_head_z"] = int(str(llm.lm_head.weight.device)[-1])
             self.hf_device_map["upsample"] = int(str(llm.lm_head.weight.device)[-1])
 
-        print(self.hf_device_map, flush=True)
-
         if llm.hf_device_map == {'': 0}:
             self.hf_device_map = {'': 0}
 
