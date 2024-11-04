@@ -115,8 +115,14 @@ Experiments show that QST can reduce the total memory footprint by up to 2.3 tim
   docker run --gpus all -it --rm qst-docker:v5 bash -c "source /opt/conda/etc/profile.d/conda.sh && conda activate QST && ./qst-70b.sh model-name"
   ```
 
-## Contributing
-Zhengxin Zhang, Dan Zhao, Xupeng Miao, Gabriele Oliaro, Zhihao Zhang, Qing Li, Yong Jiang, and Zhihao Jia.
+## Citation
+If you find this paper helpful, please consider to cite our work:
+@article{zhang2024quantized,
+  title={Quantized Side Tuning: Fast and Memory-Efficient Tuning of Quantized Large Language Models},
+  author={Zhang, Zhengxin and Zhao, Dan and Miao, Xupeng and Oliaro, Gabriele and Li, Qing and Jiang, Yong and Jia, Zhihao},
+  journal={arXiv preprint arXiv:2401.07159},
+  year={2024}
+}
 
 ## License
 This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
