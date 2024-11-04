@@ -116,13 +116,18 @@ Experiments show that QST can reduce the total memory footprint by up to 2.3 tim
   ```
 
 ## Citation
-If you find this paper helpful, please consider to cite our work:
-@article{zhang2024quantized,
-  title={Quantized Side Tuning: Fast and Memory-Efficient Tuning of Quantized Large Language Models},
-  author={Zhang, Zhengxin and Zhao, Dan and Miao, Xupeng and Oliaro, Gabriele and Li, Qing and Jiang, Yong and Jia, Zhihao},
-  journal={arXiv preprint arXiv:2401.07159},
-  year={2024}
+If you find our work helpful, please consider to cite our work:
+``` bibtex
+@misc{zhang2024quantizedtuningfastmemoryefficient,
+      title={Quantized Side Tuning: Fast and Memory-Efficient Tuning of Quantized Large Language Models}, 
+      author={Zhengxin Zhang and Dan Zhao and Xupeng Miao and Gabriele Oliaro and Qing Li and Yong Jiang and Zhihao Jia},
+      year={2024},
+      eprint={2401.07159},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2401.07159}, 
 }
+```
 
 ## License
 This project is licensed under the Apache License 2.0 - see the [LICENSE](LICENSE) file for details.
