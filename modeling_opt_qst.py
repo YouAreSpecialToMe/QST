@@ -2038,10 +2038,10 @@ class QSTOPTForSequenceClassification(OPTPreTrainedModel):
         self.hidden_size = config.hidden_size
         self.qst_hidden_dim = int(config.hidden_size / QSTConfig.r)
 
-        self.model = QSTOPTModel(OPTForSequenceClassification.model, config, QSTConfig, llm.hf_device_map)
+        self.model = QSTOPTModel(llm.model, config, QSTConfig, llm.hf_device_map)
         self.hf_device_map = self.model.decoder.hf_device_map
 
-        self.score_z = nn.Parameter(torch.zeros(config.config.hidden_size)).to(llm.score.weight.device)
+        self.score_z = nn.Parameter(torch.zeros(config.hidden_size)).to(llm.score.weight.device)
         self.upsample = nn.Linear(self.qst_hidden_dim, config.word_embed_proj_dim).to(llm.score.weight.device)
         self.score = nn.Linear(config.word_embed_proj_dim, self.num_labels, bias=False).to(llm.score.weight.device)
         self.score.weight = llm.score.weight
